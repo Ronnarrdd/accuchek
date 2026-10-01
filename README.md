@@ -21,9 +21,11 @@ Code source de `accuchek`, le programme C++ qui lit les mesures d'un Accu-Chek G
 ```sh
 accuchek [NUMERO_LECTEUR] > mesures.json      # lecteur branché
 accuchek --capture lecture.trace > mesures.json  # idem, en enregistrant les échanges USB
-accuchek --replay lecture.trace > mesures.json   # rejoue une trace, sans lecteur ni root
+accuchek --replay lecture.trace > mesures.json   # rejoue une trace, sans lecteur
 accuchek --known-devices                         # lecteurs acceptés (vendor:product)
 ```
+
+Aucune commande ne demande root. L'accès USB au lecteur vient de la règle udev `packaging/udev/70-glucofi-accuchek.rules` (`TAG+="uaccess"`, pour la session locale active) ; sans elle, accuchek sort en code 3 (`permission denied on USB meter ...`). L'original refusait de tourner si `euid != 0`.
 
 Les lecteurs acceptés sont intégrés au programme (`defaultConfig()` : `173a:21d5` Accu-Chek Guide, `173a:21d7`, `173a:21d8` Relion Platinum). Aucun fichier n'est lu dans le dossier courant. Pour essayer un autre modèle ou en désactiver un : `accuchek --config fichier.txt`, au format de `config.example.txt` (`vendor_0x173a_device_0x21d7 0` désactive).
 
@@ -40,7 +42,7 @@ Le JSON est écrit en une seule fois, une fois la lecture terminée. En cas d'é
 | 0 | `kExitOk` | `OK` | lecture réussie, y compris lecteur vide (`[]`) ou libération ratée après la dernière mesure |
 | 1 | `kExitUsage` | `USAGE` | option inconnue, fichier de config, trace ou capture illisible |
 | 2 | `kExitNoDevice` | `NO_DEVICE` | aucun lecteur connu sur le bus USB |
-| 3 | `kExitAccessDenied` | `ACCESS_DENIED` | lecteur trouvé mais ouverture refusée (droits USB, pas root) |
+| 3 | `kExitAccessDenied` | `ACCESS_DENIED` | lecteur trouvé mais ouverture refusée (règle udev absente) |
 | 4 | `kExitTransfer` | `TRANSFER` | transfert USB échoué : timeout, lecteur débranché |
 | 5 | `kExitProtocol` | `PROTOCOL` | le lecteur a interrompu l'association ou répondu autre chose |
 

@@ -694,14 +694,6 @@ static void run(
         exit(kExitOk);
     }
 
-    // must be root
-    if(0==replayPath) {
-        auto euid = geteuid();
-        if(0!=euid) {
-            die(kExitAccessDenied, "must be root, euid is %d", (int)euid);
-        }
-    }
-
     // make some noise
     LOG_NFO("starting");
 

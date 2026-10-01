@@ -388,11 +388,11 @@ TEST(cli_debug_logs_stay_off_stdout) {
     CHECK_EQ(quiet.err, std::string(""));
 }
 
-TEST(cli_not_root_exit_code) {
-    if(0==geteuid()) {
-        return;
-    }
-    auto r = runBinary("");
-    CHECK_EQ(r.code, kExitAccessDenied);
-    CHECK(0==r.err.find("accuchek: must be root"));
+// accuchek used to refuse to run unless root; USB access now comes from udev.
+// Device #99 never exists, so a plugged meter is looked at but never read.
+TEST(cli_runs_without_root) {
+    auto r = runBinary("99");
+    CHECK(kExitNoDevice==r.code || kExitAccessDenied==r.code || kExitTransfer==r.code);
+    CHECK(std::string::npos==r.err.find("root"));
+    CHECK(0==r.err.find("accuchek: "));
 }
