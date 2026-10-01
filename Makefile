@@ -1,40 +1,46 @@
-
-.PHONY:all clean
+.PHONY: all clean test
 SHELL = /bin/bash
-LIBS= -lusb-1.0
-#CFLAGS=-O0 -g3 -march=native
-CFLAGS=-g0 -O3 -march=native -fomit-frame-pointer -DNDEBUG
+CXX = g++ -std=c++17
+LIBS = -lusb-1.0 -lm
+#CFLAGS = -O0 -g3 -march=native
+CFLAGS = -g0 -O3 -march=native -fomit-frame-pointer -DNDEBUG
+# sanitizers when installed (libasan-devel, libubsan-devel)
+SANITIZE := $(shell echo 'int main(){}' | $(CXX) -x c++ -fsanitize=address,undefined - -o /dev/null 2>/dev/null \
+    && echo -fsanitize=address,undefined -fno-sanitize-recover=all)
+TEST_CFLAGS = -O0 -g -fno-omit-frame-pointer -D_GLIBCXX_ASSERTIONS $(SANITIZE)
+
+LIB_SRCS = protocol.cpp session.cpp trace.cpp log.cpp
+TEST_SRCS = tests/check.cpp tests/test_protocol.cpp tests/test_session.cpp
 
 all: accuchek
 	@echo done.
 
-# target accuchek
-# ---------------
+accuchek: .objs/main.o $(LIB_SRCS:%.cpp=.objs/%.o)
+	@echo lnk -- $@
+	@$(CXX) $(CFLAGS) -o $@ $^ $(LIBS)
 
-.objs/main.o:main.cpp
-	@echo c++ -- main.cpp
-	@mkdir -p .deps
-	@mkdir -p .objs
-	@g++ -std=c++17 -MD ${CFLAGS} -I. -c main.cpp -o .objs/main.o
-	@mv .objs/main.d .deps
+.objs/%.o: %.cpp Makefile
+	@echo c++ -- $<
+	@mkdir -p $(dir $@) .deps/$(dir $<)
+	@$(CXX) -MMD -MF .deps/$*.d $(CFLAGS) -I. -c $< -o $@
 
-.objs/log.o:log.cpp
-	@echo c++ -- log.cpp
-	@mkdir -p .deps
-	@mkdir -p .objs
-	@g++ -std=c++17 -MD ${CFLAGS} -I. -c log.cpp -o .objs/log.o
-	@mv .objs/log.d .deps
+# tests: built with sanitizers, run against the real binary for CLI checks
+# -------------------------------------------------------------------------
 
-accuchek:.objs/main.o .objs/log.o 
-	@echo lnk -- accuchek
-	@g++ -std=c++17 ${CFLAGS} -o accuchek .objs/main.o .objs/log.o  -lusb-1.0 -lm
+.objs/test/%.o: %.cpp Makefile
+	@echo c++ test -- $<
+	@mkdir -p $(dir $@) .deps/test/$(dir $<)
+	@$(CXX) -MMD -MF .deps/test/$*.d $(TEST_CFLAGS) -I. -c $< -o $@
 
-# target clean
-# ------------
+.objs/test/run_tests: $(LIB_SRCS:%.cpp=.objs/test/%.o) $(TEST_SRCS:%.cpp=.objs/test/%.o)
+	@echo lnk -- $@
+	@$(CXX) $(TEST_CFLAGS) -o $@ $^ $(LIBS)
+
+test: accuchek .objs/test/run_tests
+	@ACCUCHEK_BIN="$(CURDIR)/accuchek" .objs/test/run_tests
+
 clean:
 	rm -r -f accuchek
 	rm -r -f .deps .objs
 
--include .deps/*
-
-
+-include $(shell find .deps -name '*.d' 2>/dev/null)
