@@ -99,15 +99,35 @@ static std::vector<sim::Record> randomRecords(
     return records;
 }
 
+static std::vector<sim::MealRecord> randomMeals(
+    Rng &rng
+) {
+    static const uint16_t meals[] = {
+        kMDC_CTXT_GLU_MEAL_PREPRANDIAL, kMDC_CTXT_GLU_MEAL_POSTPRANDIAL, kMDC_CTXT_GLU_MEAL_FASTING,
+        kMDC_CTXT_GLU_MEAL_CASUAL, kMDC_CTXT_GLU_MEAL_BEDTIME, 0x1234,
+    };
+    std::vector<sim::MealRecord> records;
+    for(auto n = rng.below(8); n; --n) {
+        records.push_back({
+            int(2000 + rng.below(40)), int(1 + rng.below(12)), int(1 + rng.below(28)),
+            int(rng.below(24)), int(rng.below(60)), int(rng.below(60)), meals[rng.below(6)]
+        });
+    }
+    return records;
+}
+
 static void fuzzParsers(
     Rng &rng,
     Stats &stats
 ) {
     sim::Bytes seed;
-    switch(rng.below(4)) {
+    switch(rng.below(7)) {
         case 0: seed = sim::configInfo(uint16_t(rng.next()), uint16_t(rng.next()), uint16_t(rng.below(5))); break;
         case 1: seed = sim::segmentHeaders(uint16_t(rng.next()), 0x0100); break;
         case 2: seed = sim::mdsAnswer(uint16_t(rng.next())); break;
+        case 3: seed = sim::mdsAnswer(uint16_t(rng.next()), sim::Meter()); break;
+        case 4: seed = sim::segmentInfoResponse(uint16_t(rng.next()), 0x0100, sim::guideSegments(rng.below(1000), rng.below(1000))); break;
+        case 5: seed = sim::mealSegment(0x30, 0x0100, 0, randomMeals(rng), true, rng.below(2)); break;
         default: seed = sim::dataSegment(0x20, 0x0100, 0, randomRecords(rng), true, rng.below(2)); break;
     }
     GuardedBytes g(mutate(rng, seed));
@@ -138,6 +158,34 @@ static void fuzzParsers(
     } else {
         ++stats.rejectedSegments;
     }
+
+    MealSegment meals;
+    if(parseMealSegment(g.data, g.size, meals, error)) {
+        if(36 + 10 * meals.entries.size() > g.size) {
+            ++stats.invariantFailures;
+            fprintf(stderr, "iteration %ld: %zu meal markers parsed out of %zu bytes\n",
+                (long)gCurrentIteration, meals.entries.size(), g.size);
+        }
+        for(const auto &m : meals.entries) {
+            mealName(m.meal);
+        }
+    }
+
+    MeterInfo info;
+    if(parseMdsAnswer(g.data, g.size, info)) {
+        jsonString(info.manufacturer + info.model + info.serial + info.firmware + info.systemId);
+        if(info.hasClock && !(info.clock.valid && 1<=info.clock.month && info.clock.month<=12 && info.clock.second<=59)) {
+            ++stats.invariantFailures;
+            fprintf(stderr, "iteration %ld: invalid meter clock accepted\n", (long)gCurrentIteration);
+        }
+    }
+
+    std::vector<SegmentInfo> segments;
+    if(parseSegmentInfo(g.data, g.size, segments) && 6 * segments.size() > g.size) {
+        ++stats.invariantFailures;
+        fprintf(stderr, "iteration %ld: %zu segments described in %zu bytes\n",
+            (long)gCurrentIteration, segments.size(), g.size);
+    }
 }
 
 // a valid session where one device message is mutated
@@ -145,11 +193,21 @@ static void fuzzSession(
     Rng &rng,
     Stats &stats
 ) {
-    std::vector<std::vector<sim::Record>> segments;
+    sim::Session session;
     for(auto n = 1 + rng.below(3); n; --n) {
-        segments.push_back(randomRecords(rng));
+        session.glucose.push_back(randomRecords(rng));
     }
-    auto trace = sim::sessionTrace(segments);
+    if(rng.below(2)) {
+        session.meals.push_back(randomMeals(rng));
+    }
+    session.describe = (0!=rng.below(4));
+    session.setTime = session.describe && rng.below(2);
+    auto trace = sim::sessionTrace(session);
+    SessionOptions options;
+    options.setTime = session.setTime;
+    auto tm = sim::localTm(session.now);
+    auto now = mktime(&tm);
+    options.pcClock = [now]() { return PcClock{now, true, true}; };
 
     std::vector<std::string> lines;
     size_t start = 0;
@@ -175,7 +233,8 @@ static void fuzzSession(
 
     try {
         ReplayTransport transport(mutated);
-        downloadSamples(transport, [](const Sample &s) { sampleJson(s, 0); });
+        SessionReport report;
+        downloadSamples(transport, options, report, [](const Sample &s) { sampleJson(s, 0); });
         ++stats.sessionsOk;
     } catch(const SessionError &) {
         ++stats.sessionsFailed;

@@ -60,6 +60,7 @@
         int bulkOut(const uint8_t *buffer, size_t len) override;
         int bulkIn(uint8_t *buffer, size_t maxLen) override;
         const char *errorName(int code) override { return inner.errorName(code); }
+        void note(const std::string &text) override;
 
     private:
         void record(char kind, const uint8_t *buffer, int result);

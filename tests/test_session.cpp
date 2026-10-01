@@ -18,6 +18,8 @@ static const std::vector<std::vector<sim::Record>> kTwoSegments = {
     },
 };
 
+static const std::vector<std::vector<sim::Record>> kNoSegments;
+
 // trace line indexes in sim::sessionTrace (line 0 is the comment)
 enum {
     kLinePairingConfirm = 3,
@@ -79,6 +81,244 @@ static std::string sessionError(
     return sessionFailure(trace).msg;
 }
 
+static std::vector<Sample> downloadWith(
+    const std::string &trace,
+    const SessionOptions &options,
+    SessionReport &report,
+    ReplayTransport **leftover = 0
+) {
+    static ReplayTransport *last = 0;
+    delete last;
+    last = new ReplayTransport(trace);
+    if(leftover) {
+        *leftover = last;
+    }
+    std::vector<Sample> samples;
+    downloadSamples(*last, options, report, [&](const Sample &s) { samples.push_back(s); });
+    return samples;
+}
+
+static SessionOptions optionsAt(
+    const sim::Session &s,
+    bool synchronized = true
+) {
+    auto tm = sim::localTm(s.now);
+    auto now = mktime(&tm);
+    SessionOptions options;
+    options.setTime = s.setTime;
+    options.pcClock = [now, synchronized]() { return PcClock{now, true, synchronized}; };
+    return options;
+}
+
+// one unmatched marker, markers split over two messages like the glucose
+static sim::Session mealSession() {
+    sim::Session s;
+    s.glucose = {
+        {{2026, 9, 30, 7, 31, 112, 0, 12}, {2026, 9, 30, 13, 2, 182, 0, 40}},
+        {{2026, 9, 30, 21, 45, 151, 0, 3}, {2026, 10, 1, 7, 10, 98, 0, 59}},
+    };
+    s.meals = {
+        {{2026, 9, 30, 7, 31, 12, kMDC_CTXT_GLU_MEAL_FASTING}, {2026, 9, 30, 13, 2, 40, kMDC_CTXT_GLU_MEAL_POSTPRANDIAL}},
+        {{2026, 9, 30, 21, 45, 3, kMDC_CTXT_GLU_MEAL_BEDTIME}, {2026, 9, 29, 8, 0, 0, kMDC_CTXT_GLU_MEAL_PREPRANDIAL}},
+    };
+    return s;
+}
+
+TEST(session_reads_meal_markers_from_their_segment) {
+    auto s = mealSession();
+    SessionReport report;
+    ReplayTransport *t = 0;
+    auto samples = downloadWith(sim::sessionTrace(s), optionsAt(s), report, &t);
+    CHECK(t->finished());
+    CHECK_EQ(samples.size(), 4u);
+    if(4!=samples.size()) {
+        return;
+    }
+    CHECK_EQ(samples[0].meal, kMDC_CTXT_GLU_MEAL_FASTING);
+    CHECK_EQ(samples[1].meal, kMDC_CTXT_GLU_MEAL_POSTPRANDIAL);
+    CHECK_EQ(samples[2].meal, kMDC_CTXT_GLU_MEAL_BEDTIME);
+    CHECK_EQ(samples[3].meal, 0);
+    CHECK(report.hasMealSegment);
+    CHECK(report.meal.announced);
+    CHECK_EQ(report.meal.expected, 4u);
+    CHECK_EQ(report.meal.received, 4u);
+    CHECK_EQ(report.mealsUnmatched, 1u);
+    CHECK(report.glucose.announced);
+    CHECK_EQ(report.glucose.expected, 4u);
+    CHECK_EQ(report.glucose.received, 4u);
+}
+
+TEST(session_reports_meter_identity_and_clock_offset) {
+    sim::Session s;
+    s.glucose = kTwoSegments;
+    SessionReport report;
+    downloadWith(sim::sessionTrace(s), optionsAt(s), report);
+    CHECK(report.hasMeter);
+    CHECK_EQ(report.meter.serial, std::string("92500000042"));
+    CHECK_EQ(report.meter.firmware, std::string("v1.9.6"));
+    CHECK(report.hasClockOffset);
+    CHECK_EQ(report.clockOffsetS, 24L * 60 + 6);     // 21:06:58 on the meter at 20:42:52
+    CHECK_EQ(report.clockAction, kClockNotRequested);
+    // the Guide always lists its marker segment, empty when no marker was set
+    CHECK(report.hasMealSegment);
+    CHECK_EQ(report.meal.expected, 0u);
+}
+
+TEST(session_sets_a_clock_that_is_off) {
+    sim::Session s;
+    s.glucose = kTwoSegments;
+    s.setTime = true;
+    SessionReport report;
+    ReplayTransport *t = 0;
+    auto samples = downloadWith(sim::sessionTrace(s), optionsAt(s), report, &t);
+    CHECK_EQ(report.clockAction, kClockSet);
+    CHECK_EQ(samples.size(), 3u);
+    CHECK(t->finished());
+    CHECK(std::string::npos!=sim::sessionTrace(s).find("0C17000C2026100120425200"));
+}
+
+// a real capture with --set-time used to be impossible to replay: the PC time sent was nowhere
+TEST(capture_records_the_pc_time_it_sent) {
+    sim::Session s;
+    s.glucose = kTwoSegments;
+    s.setTime = true;
+    ReplayTransport meter(sim::sessionTrace(s));
+    char *text = 0;
+    size_t size = 0;
+    auto out = open_memstream(&text, &size);
+    {
+        RecordingTransport recording(meter, out);
+        SessionReport report;
+        downloadSamples(recording, optionsAt(s), report, [](const Sample &) {});
+        CHECK_EQ(report.clockAction, kClockSet);
+    }
+    fclose(out);
+    std::string captured(text, size);
+    free(text);
+    CHECK(std::string::npos!=captured.find("\n# args: " + sim::replayArgs(s) + "\n"));
+    SessionReport replayed;
+    ReplayTransport *t = 0;
+    CHECK_EQ(downloadWith(captured, optionsAt(s), replayed, &t).size(), 3u);
+    CHECK_EQ(replayed.clockAction, kClockSet);
+    CHECK(t->finished());
+}
+
+TEST(capture_without_set_time_has_no_args) {
+    sim::Session s;
+    s.glucose = kTwoSegments;
+    ReplayTransport meter(sim::sessionTrace(s));
+    char *text = 0;
+    size_t size = 0;
+    auto out = open_memstream(&text, &size);
+    {
+        RecordingTransport recording(meter, out);
+        SessionReport report;
+        downloadSamples(recording, optionsAt(s), report, [](const Sample &) {});
+    }
+    fclose(out);
+    CHECK(std::string::npos==std::string(text, size).find("# args:"));
+    free(text);
+}
+
+static ClockAction clockActionFor(
+    sim::Session s,
+    bool synchronized = true
+) {
+    s.glucose = kTwoSegments;
+    auto traced = s;
+    traced.setTime = false;     // nothing is sent when the clock is left alone
+    SessionReport report;
+    ReplayTransport *t = 0;
+    downloadWith(sim::sessionTrace(traced), optionsAt(s, synchronized), report, &t);
+    CHECK(t->finished());
+    return report.clockAction;
+}
+
+TEST(session_leaves_a_clock_within_tolerance) {
+    sim::Session s;
+    s.setTime = true;
+    s.meter.clock = {2026, 10, 1, 20, 43, 52};      // 60 s ahead
+    CHECK_EQ(clockActionFor(s), kClockWithinTolerance);
+    s.meter.clock = {2026, 10, 1, 20, 41, 52};      // 60 s behind
+    CHECK_EQ(clockActionFor(s), kClockWithinTolerance);
+    s.meter.clock = {2026, 10, 1, 20, 43, 53};
+    s.setTime = true;
+    auto traced = s;
+    traced.glucose = kTwoSegments;
+    SessionReport report;
+    ReplayTransport *t = 0;
+    downloadWith(sim::sessionTrace(traced), optionsAt(traced), report, &t);
+    CHECK_EQ(report.clockAction, kClockSet);
+    CHECK(t->finished());
+}
+
+// a PC clock that drifts must never be copied to the meter
+TEST(session_never_sets_the_clock_from_an_unsynchronized_pc) {
+    sim::Session s;
+    s.setTime = true;
+    CHECK_EQ(clockActionFor(s, false), kClockPcNotSynchronized);
+}
+
+TEST(session_does_not_set_an_unsettable_clock) {
+    sim::Session s;
+    s.setTime = true;
+    s.meter.settable = false;
+    CHECK_EQ(clockActionFor(s), kClockNotSettable);
+}
+
+TEST(session_without_pc_clock_does_not_set_the_meter) {
+    sim::Session s;
+    s.glucose = kTwoSegments;
+    SessionOptions options;
+    options.setTime = true;
+    SessionReport report;
+    ReplayTransport *t = 0;
+    downloadWith(sim::sessionTrace(s), options, report, &t);
+    CHECK_EQ(report.clockAction, kClockPcUnknown);
+    CHECK(!report.hasClockOffset);
+    CHECK(t->finished());
+}
+
+TEST(session_keeps_samples_when_the_meter_refuses_the_time) {
+    sim::Session s;
+    s.glucose = kTwoSegments;
+    s.setTime = true;
+    s.setTimeAccepted = false;
+    SessionReport report;
+    ReplayTransport *t = 0;
+    auto samples = downloadWith(sim::sessionTrace(s), optionsAt(s), report, &t);
+    CHECK_EQ(report.clockAction, kClockRejected);
+    CHECK_EQ(samples.size(), 3u);
+    CHECK(t->finished());
+}
+
+// meters that describe neither themselves nor their segments: segment 0 only, as before
+TEST(session_with_a_meter_that_describes_nothing) {
+    sim::Session s;
+    s.glucose = kTwoSegments;
+    s.meals = mealSession().meals;
+    s.describe = false;
+    SessionReport report;
+    ReplayTransport *t = 0;
+    auto samples = downloadWith(sim::sessionTrace(s), optionsAt(s), report, &t);
+    CHECK_EQ(samples.size(), 3u);
+    CHECK(t->finished());
+    CHECK(!report.hasMeter);
+    CHECK(!report.hasMealSegment);
+    CHECK(!report.glucose.announced);
+    CHECK_EQ(report.glucose.received, 3u);
+}
+
+// all or nothing: markers missing for some samples would change the morning reading
+TEST(session_meal_transfer_failure_fails_the_download) {
+    auto s = mealSession();
+    // two glucose segments and their ACKs, then the marker request and headers
+    const int firstMarkerSegment = kLineFirstSegment + 4 + 2;
+    auto f = sessionFailure(replaceLine(sim::sessionTrace(s), firstMarkerSegment, "< !-7"));
+    CHECK_EQ(f.code, kExitTransfer);
+    CHECK(std::string::npos!=f.msg.find("meal marker segment"));
+}
+
 TEST(session_downloads_all_segments) {
     ReplayTransport *t = 0;
     auto samples = download(sim::sessionTrace(kTwoSegments), &t);
@@ -112,7 +352,7 @@ TEST(session_association_abort) {
 // an empty meter used to end in an error, tidepool treats it as no data
 TEST(session_empty_meter_is_not_an_error) {
     ReplayTransport *t = 0;
-    auto samples = download(sim::sessionTrace({}), &t);
+    auto samples = download(sim::sessionTrace(kNoSegments), &t);
     CHECK_EQ(samples.size(), 0u);
     CHECK(t->finished());
 }
@@ -216,7 +456,16 @@ TEST(fixture_traces_match_simulator) {
     checkFixture("tests/fixtures/two_segments.trace", sim::sessionTrace(kTwoSegments));
     checkFixture("tests/fixtures/summer_and_dst.trace", sim::sessionTrace(kSummerAndDst));
     checkFixture("tests/fixtures/flags.trace", sim::sessionTrace(kFlags));
-    checkFixture("tests/fixtures/empty_meter.trace", sim::sessionTrace({}));
+    checkFixture("tests/fixtures/empty_meter.trace", sim::sessionTrace(kNoSegments));
+    checkFixture("tests/fixtures/meals.trace", sim::sessionTrace(mealSession()));
+    sim::Session setTime;
+    setTime.glucose = kTwoSegments;
+    setTime.setTime = true;
+    checkFixture("tests/fixtures/set_time.trace", sim::sessionTrace(setTime));
+    sim::Session old;
+    old.glucose = kTwoSegments;
+    old.describe = false;
+    checkFixture("tests/fixtures/undescribed_meter.trace", sim::sessionTrace(old));
 }
 
 // command line: run the real binary on a trace
@@ -310,17 +559,77 @@ TEST(cli_missing_config_file_is_an_error) {
     CHECK_EQ(r.err, std::string("accuchek: cannot read config file /nonexistent/config.txt\n"));
 }
 
-TEST(cli_outputs_json_array) {
+static const char *kMeterJson =
+    "  \"meter\": {\"manufacturer\":\"Roche\", \"model\":\"925\", \"serial\":\"92500000042\", "
+    "\"firmware\":\"v1.9.6\", \"hardware\":\"G\", \"software\":\"\", \"system_id\":\"0060190000000042\"},\n";
+
+// replayed without --now: the PC clock of the capture is unknown, stdout stays the same on every run
+TEST(cli_outputs_json_object) {
     auto r = runCli(sim::sessionTrace(kTwoSegments));
     CHECK_EQ(r.code, 0);
-    CHECK(9<=r.out.size());
-    if(r.out.size()<9) {
-        return;
-    }
-    CHECK_EQ(r.out.substr(0, 6), std::string("[\n    "));
-    CHECK_EQ(r.out.substr(r.out.size() - 3), std::string("\n]\n"));
+    CHECK_EQ(r.err, std::string(""));
+    auto head = std::string("{\n  \"format\": 2,\n") + kMeterJson +
+        "  \"clock\": {\"meter\":\"2026/10/01 21:06:58\", \"pc\":null, \"offset_s\":null, \"settable\":true, \"pc_synchronized\":null, \"action\":\"not_requested\"},\n"
+        "  \"glucose\": {\"announced\":3, \"received\":3},\n"
+        "  \"meal\": {\"announced\":0, \"received\":0, \"unmatched\":0},\n"
+        "  \"readings\": [\n    { \"id\":     0,";
+    CHECK_EQ(r.out.substr(0, head.size()), head);
     CHECK(std::string::npos!=r.out.find("\"timestamp\":\"2021/01/16 07:45\", \"mg/dL\": 98"));
     CHECK(std::string::npos!=r.out.find("\"id\":     2"));
+    CHECK_EQ(r.out.substr(r.out.size() - 9), std::string(" }\n  ]\n}\n"));
+}
+
+TEST(cli_outputs_meal_markers) {
+    auto r = runCli(sim::sessionTrace(mealSession()));
+    CHECK_EQ(r.code, 0);
+    CHECK(std::string::npos!=r.out.find("  \"glucose\": {\"announced\":4, \"received\":4},\n  \"meal\": {\"announced\":4, \"received\":4, \"unmatched\":1},\n"));
+    CHECK(std::string::npos!=r.out.find("\"status\":0, \"meal\":\"fasting\" }"));
+    CHECK(std::string::npos!=r.out.find("\"status\":0, \"meal\":\"after_meal\" }"));
+    CHECK(std::string::npos!=r.out.find("\"status\":0, \"meal\":\"bedtime\" }"));
+    CHECK(std::string::npos!=r.out.find("\"mg/dL\": 98, \"mmol/L\":  5.444444, \"status\":0 }"));
+}
+
+TEST(cli_sets_the_meter_clock) {
+    sim::Session s;
+    s.glucose = kTwoSegments;
+    s.setTime = true;
+    auto r = runCli(sim::sessionTrace(s), sim::replayArgs(s));
+    CHECK_EQ(r.code, 0);
+    CHECK(std::string::npos!=r.out.find(
+        "  \"clock\": {\"meter\":\"2026/10/01 21:06:58\", \"pc\":\"2026/10/01 20:42:52\", \"offset_s\":1446, \"settable\":true, \"pc_synchronized\":true, \"action\":\"set\"},\n"
+    ));
+}
+
+// the trace holds the set time request: replaying it without the same PC clock must fail
+TEST(cli_set_time_trace_needs_its_args) {
+    sim::Session s;
+    s.glucose = kTwoSegments;
+    s.setTime = true;
+    auto r = runCli(sim::sessionTrace(s));
+    CHECK_EQ(r.code, kExitTransfer);
+    CHECK_EQ(r.out, std::string(""));
+    CHECK(std::string::npos!=r.err.find("trace expects E700001A00180013010700120000"));
+}
+
+TEST(cli_meter_that_describes_nothing) {
+    sim::Session s;
+    s.glucose = kTwoSegments;
+    s.describe = false;
+    auto r = runCli(sim::sessionTrace(s));
+    CHECK_EQ(r.code, 0);
+    CHECK(0==r.out.find(
+        "{\n  \"format\": 2,\n  \"meter\": null,\n  \"clock\": null,\n"
+        "  \"glucose\": {\"announced\":null, \"received\":3},\n  \"meal\": null,\n"
+    ));
+}
+
+TEST(cli_now_needs_replay) {
+    auto r = runBinary("--now \"2026/10/01 20:42:52\"");
+    CHECK_EQ(r.code, kExitUsage);
+    CHECK_EQ(r.err, std::string("accuchek: --now only goes with --replay\n"));
+    auto bad = runCli(sim::sessionTrace(kTwoSegments), "--now 2026-10-01");
+    CHECK_EQ(bad.code, kExitUsage);
+    CHECK(0==bad.err.find("accuchek: bad --now"));
 }
 
 TEST(cli_outputs_flagged_samples) {
@@ -357,10 +666,17 @@ TEST(cli_abort_exit_code) {
     CHECK(0==r.err.find("accuchek: received association abort"));
 }
 
-TEST(cli_empty_meter_outputs_empty_array) {
-    auto r = runCli(sim::sessionTrace({}));
+TEST(cli_empty_meter_outputs_no_readings) {
+    auto r = runCli(sim::sessionTrace(kNoSegments));
     CHECK_EQ(r.code, kExitOk);
-    CHECK_EQ(r.out, std::string("[\n]\n"));
+    CHECK_EQ(
+        r.out,
+        std::string("{\n  \"format\": 2,\n") + kMeterJson +
+        "  \"clock\": {\"meter\":\"2026/10/01 21:06:58\", \"pc\":null, \"offset_s\":null, \"settable\":true, \"pc_synchronized\":null, \"action\":\"not_requested\"},\n"
+        "  \"glucose\": {\"announced\":0, \"received\":0},\n"
+        "  \"meal\": {\"announced\":0, \"received\":0, \"unmatched\":0},\n"
+        "  \"readings\": []\n}\n"
+    );
     CHECK_EQ(r.err, std::string(""));
 }
 

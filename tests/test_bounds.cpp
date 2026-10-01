@@ -91,6 +91,61 @@ TEST(config_info_huge_object_count) {
     CHECK_EQ(handle, 0x0100);
 }
 
+TEST(mds_answer_truncated_anywhere) {
+    auto packet = sim::mdsAnswer(0x11, sim::Meter());
+    for(size_t n=0; n<packet.size(); ++n) {
+        GuardedBytes g(sim::Bytes(packet.begin(), packet.begin() + n));
+        MeterInfo info;
+        CHECK(!parseMdsAnswer(g.data, g.size, info));
+    }
+}
+
+TEST(mds_answer_huge_attribute_count) {
+    auto packet = sim::mdsAnswer(0x11, sim::Meter());
+    packet[14] = 0xFF;
+    packet[15] = 0xFF;
+    GuardedBytes g(packet);
+    MeterInfo info;
+    CHECK(!parseMdsAnswer(g.data, g.size, info));
+}
+
+TEST(segment_info_truncated_anywhere) {
+    auto packet = sim::segmentInfoResponse(0x12, 0x0100, sim::guideSegments(638, 576));
+    for(size_t n=0; n<packet.size(); ++n) {
+        GuardedBytes g(sim::Bytes(packet.begin(), packet.begin() + n));
+        std::vector<SegmentInfo> segments;
+        CHECK(!parseSegmentInfo(g.data, g.size, segments));
+    }
+}
+
+TEST(segment_info_huge_segment_count) {
+    auto packet = sim::segmentInfoResponse(0x12, 0x0100, sim::guideSegments(638, 576));
+    packet[18] = 0xFF;
+    packet[19] = 0xFF;
+    GuardedBytes g(packet);
+    std::vector<SegmentInfo> segments;
+    CHECK(!parseSegmentInfo(g.data, g.size, segments));
+}
+
+TEST(meal_segment_cut_short) {
+    auto packet = sim::mealSegment(0x30, 0x0100, 0, {{2026, 9, 30, 7, 31, 12, kMDC_CTXT_GLU_MEAL_FASTING}}, true, true);
+    for(size_t n=0; n<packet.size(); ++n) {
+        GuardedBytes g(sim::Bytes(packet.begin(), packet.begin() + n));
+        MealSegment segment;
+        std::string error;
+        CHECK(!parseMealSegment(g.data, g.size, segment, error));
+    }
+}
+
+// a glucose segment is not a marker segment: entries of 12 bytes, not 10
+TEST(meal_parser_rejects_glucose_entries) {
+    auto packet = sim::dataSegment(0x20, 0x0100, 0, kRecords, true, true);
+    GuardedBytes g(packet);
+    MealSegment segment;
+    std::string error;
+    CHECK(!parseMealSegment(g.data, g.size, segment, error));
+}
+
 TEST(invalid_bcd_date_is_flagged_not_trusted) {
     CHECK_EQ(decodeBcd(0x1A), -1);
     CHECK_EQ(decodeBcd(0xF0), -1);

@@ -53,6 +53,20 @@
     static constexpr uint16_t kDATA_RESPONSE_EMPTY =                       0x0003;
     static constexpr uint16_t kACTION_TYPE_MDC_ACT_SEG_SET_TIME =          0x0C17;
 
+    // ISO/IEEE 11073-10417 glucose nomenclature
+    static constexpr uint16_t kMDC_CONC_GLU_CONTROL =                      29136;
+    static constexpr uint16_t kMDC_CTXT_GLU_MEAL =                         29256;
+    static constexpr uint16_t kMDC_CTXT_GLU_MEAL_PREPRANDIAL =             29260;
+    static constexpr uint16_t kMDC_CTXT_GLU_MEAL_POSTPRANDIAL =            29264;
+    static constexpr uint16_t kMDC_CTXT_GLU_MEAL_FASTING =                 29268;
+    static constexpr uint16_t kMDC_CTXT_GLU_MEAL_CASUAL =                  29272;
+    static constexpr uint16_t kMDC_CTXT_GLU_MEAL_BEDTIME =                 29300;
+
+    // MdsTimeCapBits, bit 0 is the most significant one
+    static constexpr uint16_t kMDS_TIME_CAPAB_SET_CLOCK =                  0x4000;
+    // SegmEntryHeader: every entry starts with an 8 byte absolute time
+    static constexpr uint16_t kSEG_ELEM_HDR_ABSOLUTE_TIME =                0x8000;
+
     #define MDC_LIST                                \
       x(MDC_MOC_VMO_METRIC, 4)                      \
       x(MDC_MOC_VMO_METRIC_ENUM, 5)                 \
@@ -206,7 +220,9 @@
     size_t buildConfigReceived(uint8_t *buffer, uint16_t invokeId);
     size_t buildMdsRequest(uint8_t *buffer, uint16_t invokeId);
     size_t buildSegmentInfoRequest(uint8_t *buffer, uint16_t invokeId, uint16_t pmStoreHandle);
-    size_t buildTriggerTransfer(uint8_t *buffer, uint16_t invokeId, uint16_t pmStoreHandle);
+    size_t buildTriggerTransfer(uint8_t *buffer, uint16_t invokeId, uint16_t pmStoreHandle, uint16_t segment = 0);
+    // set the meter clock (MDS object, handle 0) to a local date and time
+    size_t buildSetTime(uint8_t *buffer, uint16_t invokeId, const struct tm &local);
     size_t buildSegmentAck(
         uint8_t *buffer,
         uint16_t invokeId,
@@ -247,6 +263,8 @@
         uint16_t value;     // mg/dL
         uint16_t status;
         bool validDate;     // BCD digits and calendar ranges are sane
+        uint64_t timeKey = 0;   // the 8 raw time bytes, shared with the meal entry of this sample
+        uint16_t meal = 0;      // MDC_CTXT_GLU_MEAL_* code, 0 without a meal marker
     };
 
     // one data segment message
@@ -258,10 +276,84 @@
         std::vector<Sample> samples;
     };
 
+    // one meal marker as stored by the device, in its own segment
+    struct MealEntry {
+        uint64_t timeKey;
+        uint16_t meal;
+    };
+
+    struct MealSegment {
+        uint32_t u0;
+        uint32_t u1;
+        uint16_t u2;
+        bool last;
+        std::vector<MealEntry> entries;
+    };
+
     // decode the device's weird-ass encoding of datetime values (BCD), -1 if not BCD
     int decodeBcd(uint8_t x);
 
+    // date and time as 8 BCD bytes (century, year, month, day, hour, minute, second, 1/100 s)
+    struct AbsoluteTime {
+        int year;
+        int month;
+        int day;
+        int hour;
+        int minute;
+        int second;
+        bool valid;
+    };
+    AbsoluteTime decodeAbsoluteTime(Reader r);
+
+    // epoch of a meter date, computed from the device local time
+    time_t localEpoch(const AbsoluteTime &t);
+
+    // "2026/10/01 21:06:58"
+    std::string formatTime(const AbsoluteTime &t);
+
     bool parseSegment(const uint8_t *buffer, size_t len, Segment &segment, std::string &error);
+    bool parseMealSegment(const uint8_t *buffer, size_t len, MealSegment &segment, std::string &error);
+
+    // identity and clock of the meter, from the answer to the MDS attribute request
+    struct MeterInfo {
+        std::string manufacturer;
+        std::string model;
+        std::string serial;
+        std::string firmware;
+        std::string hardware;
+        std::string software;
+        std::string systemId;       // EUI-64, hex
+        bool hasClock = false;
+        AbsoluteTime clock = {};
+        bool clockSettable = false;
+    };
+
+    // false when the answer is malformed; a well formed answer may still lack attributes
+    bool parseMdsAnswer(const uint8_t *buffer, size_t len, MeterInfo &info);
+
+    // what a pm-segment holds, from the answer to the segment info request
+    enum SegmentKind {
+        kSegmentOther = 0,
+        kSegmentGlucose,    // 12 byte entries: time, value, status
+        kSegmentMeal,       // 10 byte entries: time, meal OID
+    };
+
+    struct SegmentInfo {
+        uint16_t instance = 0;
+        SegmentKind kind = kSegmentOther;
+        std::string label;
+        bool hasUsageCount = false;
+        uint32_t usageCount = 0;    // entries stored in the segment
+    };
+
+    bool parseSegmentInfo(const uint8_t *buffer, size_t len, std::vector<SegmentInfo> &segments);
+
+    // meal markers are attached to the glucose sample with the same raw time,
+    // returns the number of markers without such a sample
+    size_t attachMeals(std::vector<Sample> &samples, const std::vector<MealEntry> &meals);
+
+    // "fasting", "before_meal"... for a MDC_CTXT_GLU_MEAL_* code, "other" for an unknown one
+    const char *mealName(uint16_t meal);
 
     // epoch of a sample, computed from the device local time
     time_t sampleEpoch(const Sample &sample);
@@ -269,8 +361,12 @@
     // JSON object for one sample (no separator, no newline), every sample is
     // reported: "status" is the raw device status, off scale values get
     // "range":"high" or "range":"low" with mg/dL set to 601 or 9, samples
-    // with an invalid date get null epoch/timestamp and an "error"
+    // with an invalid date get null epoch/timestamp and an "error", samples
+    // with a meal marker get "meal"
     std::string sampleJson(const Sample &sample, int id);
+
+    // JSON string literal, quotes included, non printable bytes escaped
+    std::string jsonString(const std::string &s);
 
     } // namespace accuchek
 

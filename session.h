@@ -29,6 +29,9 @@
         virtual int bulkIn(uint8_t *buffer, size_t maxLen) = 0;
 
         virtual const char *errorName(int code) = 0;
+
+        // comment for a recorded trace ("# " + text), ignored by other transports
+        virtual void note(const std::string &) {}
     };
 
     // process exit codes, mirrored by contracts.AccuchekExit on the Glucofi side
@@ -46,12 +49,73 @@
         ExitCode code;
     };
 
-    // run the whole protocol, call onSample for every sample, whatever its status;
-    // an empty meter is not an error (no sample), neither is a failed release
+    // the PC clock, as seen when the meter clock is read
+    struct PcClock {
+        time_t now;
+        bool known;         // false when replaying a trace without --now
+        bool synchronized;  // kernel clock disciplined by NTP, trusted to set the meter
+    };
+
+    // meter clock further than this from the PC clock gets set, when asked to
+    static constexpr long kClockToleranceS = 60;
+
+    struct SessionOptions {
+        bool setTime = false;
+        std::function<PcClock()> pcClock;   // PC clock unknown when empty
+    };
+
+    // why the meter clock was or was not set
+    enum ClockAction {
+        kClockNotRequested = 0,
+        kClockSet,
+        kClockWithinTolerance,
+        kClockNotSettable,          // the meter does not advertise mds-time-capab-set-clock
+        kClockPcNotSynchronized,
+        kClockPcUnknown,
+        kClockUnknown,              // the meter did not give its clock
+        kClockRejected,             // the meter answered the set time action with an error
+    };
+    const char *clockActionName(ClockAction action);
+
+    struct SegmentCount {
+        bool announced = false;     // the meter gave its usage count
+        uint32_t expected = 0;
+        uint32_t received = 0;
+    };
+
+    // everything learnt besides the samples
+    struct SessionReport {
+        bool hasMeter = false;
+        MeterInfo meter;
+        PcClock pc = {0, false, false};
+        bool hasClockOffset = false;
+        long clockOffsetS = 0;      // meter clock minus PC clock
+        ClockAction clockAction = kClockNotRequested;
+        SegmentCount glucose;
+        bool hasMealSegment = false;
+        SegmentCount meal;
+        size_t mealsUnmatched = 0;
+    };
+
+    // run the whole protocol: glucose samples, then meal markers when the meter
+    // stores them, attached to their samples before onSample is called; every
+    // sample is reported whatever its status; an empty meter is not an error
+    // (no sample), neither is a failed release nor a refused clock setting
+    void downloadSamples(
+        Transport &transport,
+        const SessionOptions &options,
+        SessionReport &report,
+        const std::function<void(const Sample &)> &onSample
+    );
+
+    // same, without setting the clock nor keeping the report
     void downloadSamples(
         Transport &transport,
         const std::function<void(const Sample &)> &onSample
     );
+
+    // PC clock from time() and adjtimex()
+    PcClock systemClock();
 
     // canonical hexdump of a buffer with header (debug output)
     void hexDumpWithHeader(const char *bufferName, const uint8_t *buffer, uint32_t size);

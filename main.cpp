@@ -2,10 +2,16 @@
 
      download samples from a Roche accuchek device using libusb
 
-     usage: accuchek [DEVICE_INDEX] [--config FILE] [--capture TRACE] [--replay TRACE]
+     usage: accuchek [DEVICE_INDEX] [--config FILE] [--set-time] [--capture TRACE]
+            accuchek --replay TRACE [--set-time --now "YYYY/MM/DD HH:MM:SS"]
             accuchek [--config FILE] --known-devices
 
-     stdout: a JSON array of samples, written only once the download succeeded
+     --set-time  set the meter clock to the PC clock when they differ by more
+                 than kClockToleranceS and the PC clock is NTP synchronized
+     --now       PC clock to assume while replaying, taken as synchronized
+
+     stdout: a JSON object (format 2, see contracts/accuchek_output.schema.json),
+             written only once the download succeeded
      stderr: "accuchek: <reason>" on failure, logs when ACCUCHEK_DBG is set
      exit codes: see ExitCode in session.h
 
@@ -37,6 +43,8 @@ using namespace accuchek;
 // globals
 static Config g_config = defaultConfig();
 static std::vector<Sample> g_samples;
+static SessionOptions g_options;
+static SessionReport g_report;
 static std::string g_accessDenied;  // last known meter we were not allowed to open
 
 // reason the program stops, reported on stderr with its exit code
@@ -290,15 +298,72 @@ struct LibusbTransport : Transport {
 
 */
 
-// write all samples as one JSON array
-static void writeSamples(
+static std::string countJson(
+    const SegmentCount &count
+) {
+    return "{\"announced\":" + (count.announced ? std::to_string(count.expected) : std::string("null")) +
+        ", \"received\":" + std::to_string(count.received) + "}";
+}
+
+static std::string localTimeString(
+    time_t t
+) {
+    struct tm local;
+    localtime_r(&t, &local);
+    char buf[32];
+    strftime(buf, sizeof(buf), "%Y/%m/%d %H:%M:%S", &local);
+    return buf;
+}
+
+// write the report and all samples as one JSON object
+static void writeOutput(
     FILE *out
 ) {
-    fputc('[', out);
+    const auto &r = g_report;
+    fputs("{\n  \"format\": 2,\n", out);
+    if(r.hasMeter) {
+        const auto &m = r.meter;
+        fprintf(
+            out,
+            "  \"meter\": {\"manufacturer\":%s, \"model\":%s, \"serial\":%s, \"firmware\":%s, \"hardware\":%s, \"software\":%s, \"system_id\":%s},\n",
+            jsonString(m.manufacturer).c_str(),
+            jsonString(m.model).c_str(),
+            jsonString(m.serial).c_str(),
+            jsonString(m.firmware).c_str(),
+            jsonString(m.hardware).c_str(),
+            jsonString(m.software).c_str(),
+            jsonString(m.systemId).c_str()
+        );
+    } else {
+        fputs("  \"meter\": null,\n", out);
+    }
+    if(r.hasMeter && r.meter.hasClock) {
+        fprintf(
+            out,
+            "  \"clock\": {\"meter\":\"%s\", \"pc\":%s, \"offset_s\":%s, \"settable\":%s, \"pc_synchronized\":%s, \"action\":\"%s\"},\n",
+            formatTime(r.meter.clock).c_str(),
+            r.pc.known ? jsonString(localTimeString(r.pc.now)).c_str() : "null",
+            r.hasClockOffset ? std::to_string(r.clockOffsetS).c_str() : "null",
+            r.meter.clockSettable ? "true" : "false",
+            !r.pc.known ? "null" : (r.pc.synchronized ? "true" : "false"),
+            clockActionName(r.clockAction)
+        );
+    } else {
+        fputs("  \"clock\": null,\n", out);
+    }
+    fprintf(out, "  \"glucose\": %s,\n", countJson(r.glucose).c_str());
+    if(r.hasMealSegment) {
+        auto meal = countJson(r.meal);
+        meal.pop_back();
+        fprintf(out, "  \"meal\": %s, \"unmatched\":%d},\n", meal.c_str(), (int)r.mealsUnmatched);
+    } else {
+        fputs("  \"meal\": null,\n", out);
+    }
+    fputs("  \"readings\": [", out);
     for(size_t i=0; i<g_samples.size(); ++i) {
         fprintf(out, "%s\n    %s", (0==i ? "" : ","), sampleJson(g_samples[i], i).c_str());
     }
-    fputs("\n]\n", out);
+    fputs(g_samples.empty() ? "]\n}\n" : "\n  ]\n}\n", out);
     fflush(out);
 }
 
@@ -307,9 +372,9 @@ static void runSession(
     Transport &transport
 ) {
     try {
-        downloadSamples(transport, [](const Sample &s) { g_samples.push_back(s); });
+        downloadSamples(transport, g_options, g_report, [](const Sample &s) { g_samples.push_back(s); });
     } catch(const SessionError &e) {
-        auto received = g_samples.size();
+        auto received = g_report.glucose.received;
         g_samples.clear();
         if(0<received) {
             die(e.code, "%s (%d samples received before the error, none written)", e.what(), (int)received);
@@ -667,10 +732,15 @@ static void run(
     const char *capturePath = 0;
     const char *replayPath = 0;
     const char *configPath = 0;
+    const char *nowText = 0;
     bool listDevices = false;
     for(int i=1; i<argc; ++i) {
         if(0==strcmp(argv[i], "--config") && i+1<argc) {
             configPath = argv[++i];
+        } else if(0==strcmp(argv[i], "--set-time")) {
+            g_options.setTime = true;
+        } else if(0==strcmp(argv[i], "--now") && i+1<argc) {
+            nowText = argv[++i];
         } else if(0==strcmp(argv[i], "--known-devices")) {
             listDevices = true;
         } else if(0==strcmp(argv[i], "--capture") && i+1<argc) {
@@ -686,6 +756,26 @@ static void run(
 
     if(0!=configPath) {
         loadConfig(configPath);
+    }
+    // replaying a trace: the PC clock of the capture is unknown unless given
+    if(0==replayPath) {
+        g_options.pcClock = systemClock;
+    }
+    if(0!=nowText) {
+        // a fake clock must never reach a real meter
+        if(0==replayPath) {
+            die(kExitUsage, "--now only goes with --replay");
+        }
+        struct tm t;
+        memset(&t, 0, sizeof(t));
+        if(6!=sscanf(nowText, "%d/%d/%d %d:%d:%d", &t.tm_year, &t.tm_mon, &t.tm_mday, &t.tm_hour, &t.tm_min, &t.tm_sec)) {
+            die(kExitUsage, "bad --now %s, expected \"YYYY/MM/DD HH:MM:SS\"", nowText);
+        }
+        t.tm_year -= 1900;
+        t.tm_mon -= 1;
+        t.tm_isdst = -1;
+        auto now = mktime(&t);
+        g_options.pcClock = [now]() { return PcClock{now, true, true}; };
     }
     if(listDevices) {
         for(const auto &device : allowedDevices(g_config)) {
@@ -723,7 +813,7 @@ int main(
         fprintf(stderr, "accuchek: %s\n", f.msg.c_str());
         return f.code;
     }
-    writeSamples(stdout);
+    writeOutput(stdout);
     LOG_NFO("done");
     return kExitOk;
 }

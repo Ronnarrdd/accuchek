@@ -299,7 +299,8 @@ size_t buildSegmentInfoRequest(
 size_t buildTriggerTransfer(
     uint8_t *buffer,
     uint16_t invokeId,
-    uint16_t pmStoreHandle
+    uint16_t pmStoreHandle,
+    uint16_t segment
 ) {
     auto p = buffer;
     memset(buffer, 0, kBufferSize);
@@ -312,7 +313,42 @@ size_t buildTriggerTransfer(
     be16(p, pmStoreHandle);                // store handle
     be16(p, kACTION_TYPE_MDC_ACT_SEG_TRIG_XFER);
     be16(p,      2);                       // length
-    be16(p,      0);                       // segment
+    be16(p, segment);                      // segment instance number
+    return (p-buffer);
+}
+
+static uint8_t bcd(
+    int v
+) {
+    return uint8_t(((v / 10) << 4) | (v % 10));
+}
+
+size_t buildSetTime(
+    uint8_t *buffer,
+    uint16_t invokeId,
+    const struct tm &local
+) {
+    auto p = buffer;
+    memset(buffer, 0, kBufferSize);
+    auto year = local.tm_year + 1900;
+    be16(p, kAPDU_TYPE_PRESENTATION_APDU); // msg type
+    be16(p,     26);                       // length
+    be16(p,     24);                       // octet stringlength
+    be16(p, (1+invokeId));                 // invoke-id from prev answer
+    be16(p, kDATA_ADPU_INVOKE_CONFIRMED_ACTION);
+    be16(p,     18);                       // length of what follows
+    be16(p,      0);                       // MDS object handle
+    be16(p, kACTION_TYPE_MDC_ACT_SEG_SET_TIME);
+    be16(p,     12);                       // length
+    *p++ = bcd(year / 100);                // AbsoluteTime, BCD
+    *p++ = bcd(year % 100);
+    *p++ = bcd(local.tm_mon + 1);
+    *p++ = bcd(local.tm_mday);
+    *p++ = bcd(local.tm_hour);
+    *p++ = bcd(local.tm_min);
+    *p++ = bcd(std::min(local.tm_sec, 59)); // leap second
+    *p++ = 0;                              // hundredths
+    be32(p,      0);                       // accuracy (FLOAT-Type), unknown
     return (p-buffer);
 }
 
@@ -476,10 +512,110 @@ static bool isValidDate(
     );
 }
 
+AbsoluteTime decodeAbsoluteTime(
+    Reader r
+) {
+    AbsoluteTime t;
+    auto cc = decodeBcd(r.u8());
+    auto yy = decodeBcd(r.u8());
+    t.year = (cc<0 || yy<0) ? -1 : (cc*100 + yy);
+    t.month = decodeBcd(r.u8());
+    t.day = decodeBcd(r.u8());
+    t.hour = decodeBcd(r.u8());
+    t.minute = decodeBcd(r.u8());
+    t.second = decodeBcd(r.u8());
+    t.valid = (
+        r.ok &&
+        0<=t.year &&
+        1<=t.month && t.month<=12 &&
+        1<=t.day && t.day<=31 &&
+        0<=t.hour && t.hour<=23 &&
+        0<=t.minute && t.minute<=59 &&
+        0<=t.second && t.second<=59
+    );
+    return t;
+}
+
+static time_t localMktime(
+    int year,
+    int month,
+    int day,
+    int hour,
+    int minute,
+    int second
+) {
+    struct tm t;
+    memset(&t, 0, sizeof(t));
+    t.tm_sec = second;
+    t.tm_min = minute;
+    t.tm_hour = hour;
+    t.tm_mday = day;
+    t.tm_mon = (month-1);
+    t.tm_year = (year - 1900);
+    t.tm_isdst = -1;    // let the timezone rules decide, 0 would mean "winter time" all year
+    return mktime(&t);
+}
+
+time_t localEpoch(
+    const AbsoluteTime &t
+) {
+    return localMktime(t.year, t.month, t.day, t.hour, t.minute, t.second);
+}
+
+std::string formatTime(
+    const AbsoluteTime &t
+) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%04d/%02d/%02d %02d:%02d:%02d", t.year, t.month, t.day, t.hour, t.minute, t.second);
+    return buf;
+}
+
 // segment data event: header up to byte 30, entry count at 30-31, status
-// flags at 32, entries of 12 bytes from byte 36
+// flags at 32, entries from byte 36
 static constexpr size_t kSegmentEntriesOffset = 36;
 static constexpr size_t kSegmentEntrySize = 12;
+static constexpr size_t kMealEntrySize = 10;
+
+// common header of glucose and meal segments, false with error set when the
+// message cannot hold the entries it announces
+static bool parseSegmentHeader(
+    const uint8_t *buffer,
+    size_t len,
+    size_t entrySize,
+    uint32_t &u0,
+    uint32_t &u1,
+    uint16_t &u2,
+    bool &last,
+    std::string &error
+) {
+    Reader r(buffer, len, 22);
+    u0 = r.u32();
+    u1 = r.u32();
+    u2 = r.u16();
+    last = (0 != (0x40 & r.u8()));
+    if(!r.ok || len<kSegmentEntriesOffset) {
+        error = "data segment too short (" + std::to_string(len) + " bytes)";
+        return false;
+    }
+    size_t nbEntries = u2;
+    LOG_NFO("segment has %d entries", (int)nbEntries);
+    if(nbEntries > (len - kSegmentEntriesOffset) / entrySize) {
+        error = "data segment announces " + std::to_string(nbEntries) + " entries but holds " +
+            std::to_string((len - kSegmentEntriesOffset) / entrySize);
+        return false;
+    }
+    return true;
+}
+
+static uint64_t timeKeyAt(
+    const uint8_t *buffer,
+    size_t len,
+    size_t offset
+) {
+    Reader r(buffer, len, offset);
+    uint64_t hi = r.u32();
+    return (hi << 32) | r.u32();
+}
 
 bool parseSegment(
     const uint8_t *buffer,
@@ -487,56 +623,327 @@ bool parseSegment(
     Segment &segment,
     std::string &error
 ) {
-    Reader r(buffer, len, 22);
-    segment.u0 = r.u32();
-    segment.u1 = r.u32();
-    segment.u2 = r.u16();
-    segment.last = (0 != (0x40 & r.u8()));
     segment.samples.clear();
-    if(!r.ok || len<kSegmentEntriesOffset) {
-        error = "data segment too short (" + std::to_string(len) + " bytes)";
+    if(!parseSegmentHeader(buffer, len, kSegmentEntrySize, segment.u0, segment.u1, segment.u2, segment.last, error)) {
         return false;
     }
-
-    size_t nbEntries = segment.u2;
-    LOG_NFO("segment has %d entries", (int)nbEntries);
-    if(nbEntries > (len - kSegmentEntriesOffset) / kSegmentEntrySize) {
-        error = "data segment announces " + std::to_string(nbEntries) + " entries but holds " +
-            std::to_string((len - kSegmentEntriesOffset) / kSegmentEntrySize);
-        return false;
-    }
-
-    for(size_t i=0; i<nbEntries; ++i) {
-        Reader e(buffer, len, kSegmentEntriesOffset + i*kSegmentEntrySize);
+    for(size_t i=0; i<segment.u2; ++i) {
+        auto offset = kSegmentEntriesOffset + i*kSegmentEntrySize;
+        Reader e(buffer, len, offset);
+        auto t = decodeAbsoluteTime(e.sub(8));
         Sample s;
-        auto cc = decodeBcd(e.u8());
-        auto yy = decodeBcd(e.u8());
-        s.year = (cc<0 || yy<0) ? -1 : (cc*100 + yy);
-        s.month = decodeBcd(e.u8());
-        s.day = decodeBcd(e.u8());
-        s.hour = decodeBcd(e.u8());
-        s.minute = decodeBcd(e.u8());
-        e.skip(2);
+        s.year = t.year;
+        s.month = t.month;
+        s.day = t.day;
+        s.hour = t.hour;
+        s.minute = t.minute;
         s.value = e.u16();
         s.status = e.u16();
         s.validDate = isValidDate(s);
+        s.timeKey = timeKeyAt(buffer, len, offset);
         segment.samples.push_back(s);
     }
     return true;
 }
 
+bool parseMealSegment(
+    const uint8_t *buffer,
+    size_t len,
+    MealSegment &segment,
+    std::string &error
+) {
+    segment.entries.clear();
+    if(!parseSegmentHeader(buffer, len, kMealEntrySize, segment.u0, segment.u1, segment.u2, segment.last, error)) {
+        return false;
+    }
+    // a glucose segment read as markers would fit too: its byte count tells them apart
+    auto bytes = Reader(buffer, len, 34).u16();
+    if(bytes != segment.u2 * kMealEntrySize) {
+        error = "meal marker segment holds " + std::to_string(bytes) + " bytes for " +
+            std::to_string(segment.u2) + " entries of " + std::to_string(kMealEntrySize);
+        return false;
+    }
+    for(size_t i=0; i<segment.u2; ++i) {
+        auto offset = kSegmentEntriesOffset + i*kMealEntrySize;
+        Reader e(buffer, len, offset + 8);
+        segment.entries.push_back({timeKeyAt(buffer, len, offset), e.u16()});
+    }
+    return true;
+}
+
+// printable ASCII of an octet string, without the trailing NUL / space padding
+static std::string printable(
+    Reader r
+) {
+    std::string s;
+    while(r.has(1)) {
+        auto c = r.u8();
+        s += (0x20<=c && c<0x7F) ? char(c) : (0==c ? '\0' : '?');
+    }
+    while(!s.empty() && ('\0'==s.back() || ' '==s.back())) {
+        s.pop_back();
+    }
+    s.erase(std::remove(s.begin(), s.end(), '\0'), s.end());
+    return s;
+}
+
+static bool octetString(
+    Reader &r,
+    std::string &s
+) {
+    auto n = r.u16();
+    auto v = r.sub(n);
+    if(!r.ok) {
+        return false;
+    }
+    s = printable(v);
+    return true;
+}
+
+// Roche writes "serial-number: 92500000042", keep what follows the label
+static std::string afterLabel(
+    const std::string &s
+) {
+    auto colon = s.find(": ");
+    return (std::string::npos==colon ? s : s.substr(colon + 2));
+}
+
+// presentation APDU with the given data choice, positioned after its length field
+static bool presentation(
+    Reader &r,
+    uint16_t choice
+) {
+    auto type = r.u16();
+    r.skip(6);
+    auto actual = r.u16();
+    r.u16();
+    return r.ok && kAPDU_TYPE_PRESENTATION_APDU==type && choice==actual;
+}
+
+bool parseMdsAnswer(
+    const uint8_t *buffer,
+    size_t len,
+    MeterInfo &info
+) {
+    info = MeterInfo();
+    Reader r(buffer, len);
+    if(!presentation(r, kDATA_ADPU_RESPONSE_GET)) {
+        return false;
+    }
+    r.u16();                        // MDS object handle
+    auto count = r.u16();
+    auto attrs = r.sub(r.u16());
+    if(!r.ok) {
+        return false;
+    }
+    for(int i=0; i<count; ++i) {
+        auto id = attrs.u16();
+        auto value = attrs.sub(attrs.u16());
+        if(!attrs.ok) {
+            return false;
+        }
+        switch(id) {
+            case kMDC_ATTR_ID_MODEL:
+                octetString(value, info.manufacturer);
+                octetString(value, info.model);
+                break;
+            case kMDC_ATTR_SYS_ID: {
+                auto n = value.u16();
+                auto bytes = value.sub(n);
+                char hex[3];
+                while(bytes.has(1)) {
+                    snprintf(hex, sizeof(hex), "%02X", bytes.u8());
+                    info.systemId += hex;
+                }
+                break;
+            }
+            case kMDC_ATTR_ID_PROD_SPECN: {
+                auto n = value.u16();
+                auto specs = value.sub(value.u16());
+                for(int k=0; k<n && specs.ok; ++k) {
+                    auto type = specs.u16();
+                    specs.u16();    // component id
+                    std::string s;
+                    if(!octetString(specs, s)) {
+                        break;
+                    }
+                    s = afterLabel(s);
+                    switch(type) {
+                        case 1: info.serial = s; break;
+                        case 3: info.hardware = s; break;
+                        case 4: info.software = s; break;
+                        case 5: info.firmware = s; break;
+                        default: break;
+                    }
+                }
+                break;
+            }
+            case kMDC_ATTR_TIME_ABS:
+                info.clock = decodeAbsoluteTime(value);
+                info.hasClock = info.clock.valid;
+                break;
+            case kMDC_ATTR_MDS_TIME_INFO: {
+                auto capabilities = value.u16();
+                info.clockSettable = value.ok && (0 != (kMDS_TIME_CAPAB_SET_CLOCK & capabilities));
+                break;
+            }
+            default:
+                break;
+        }
+    }
+    return true;
+}
+
+// kind of the entries described by a PM_SEG_MAP attribute
+static SegmentKind segmentKind(
+    Reader map
+) {
+    auto header = map.u16();
+    auto count = map.u16();
+    auto elements = map.sub(map.u16());
+    if(!map.ok || kSEG_ELEM_HDR_ABSOLUTE_TIME!=header || 1!=count) {
+        return kSegmentOther;
+    }
+    auto objClass = elements.u16();
+    auto partition = elements.u16();
+    auto code = elements.u16();
+    elements.u16();                 // handle
+    auto attrCount = elements.u16();
+    auto attrs = elements.sub(elements.u16());
+    std::vector<std::pair<uint16_t, uint16_t>> layout;
+    for(int i=0; i<attrCount && attrs.ok; ++i) {
+        auto id = attrs.u16();
+        auto size = attrs.u16();
+        layout.push_back({id, size});
+    }
+    if(!elements.ok || !attrs.ok) {
+        return kSegmentOther;
+    }
+    static const std::vector<std::pair<uint16_t, uint16_t>> glucose = {
+        {kMDC_ATTR_NU_VAL_OBS_BASIC, 2}, {kMDC_ATTR_MSMT_STAT, 2},
+    };
+    static const std::vector<std::pair<uint16_t, uint16_t>> meal = {
+        {kMDC_ATTR_ENUM_OBS_VAL_SIMP_OID, 2},
+    };
+    if(kMDC_MOC_VMO_METRIC_NU==objClass && 2==partition && kMDC_CONC_GLU_CONTROL!=code && glucose==layout) {
+        return kSegmentGlucose;
+    }
+    if(kMDC_MOC_VMO_METRIC_ENUM==objClass && 128==partition && kMDC_CTXT_GLU_MEAL==code && meal==layout) {
+        return kSegmentMeal;
+    }
+    return kSegmentOther;
+}
+
+bool parseSegmentInfo(
+    const uint8_t *buffer,
+    size_t len,
+    std::vector<SegmentInfo> &segments
+) {
+    segments.clear();
+    Reader r(buffer, len);
+    if(!presentation(r, kDATA_ADPU_RESPONSE_CONFIRMED_ACTION)) {
+        return false;
+    }
+    r.u16();                        // pm-store handle
+    auto action = r.u16();
+    r.u16();
+    auto count = r.u16();
+    auto list = r.sub(r.u16());
+    if(!r.ok || kACTION_TYPE_MDC_ACT_SEG_GET_INFO!=action) {
+        return false;
+    }
+    for(int i=0; i<count; ++i) {
+        SegmentInfo info;
+        info.instance = list.u16();
+        auto attrCount = list.u16();
+        auto attrs = list.sub(list.u16());
+        if(!list.ok) {
+            return false;
+        }
+        for(int k=0; k<attrCount; ++k) {
+            auto id = attrs.u16();
+            auto value = attrs.sub(attrs.u16());
+            if(!attrs.ok) {
+                return false;
+            }
+            switch(id) {
+                case kMDC_ATTR_PM_SEG_MAP:
+                    info.kind = segmentKind(value);
+                    break;
+                case kMDC_ATTR_PM_SEG_LABEL_STRING:
+                    octetString(value, info.label);
+                    break;
+                case kMDC_ATTR_SEG_USAGE_CNT:
+                    info.usageCount = value.u32();
+                    info.hasUsageCount = value.ok;
+                    break;
+                default:
+                    break;
+            }
+        }
+        segments.push_back(info);
+    }
+    return true;
+}
+
+size_t attachMeals(
+    std::vector<Sample> &samples,
+    const std::vector<MealEntry> &meals
+) {
+    std::unordered_map<uint64_t, std::vector<size_t>> byTime;
+    for(size_t i=0; i<samples.size(); ++i) {
+        byTime[samples[i].timeKey].push_back(i);
+    }
+    size_t unmatched = 0;
+    for(const auto &m : meals) {
+        auto it = byTime.find(m.timeKey);
+        if(byTime.end()==it) {
+            ++unmatched;
+            continue;
+        }
+        for(auto i : it->second) {
+            samples[i].meal = m.meal;
+        }
+    }
+    return unmatched;
+}
+
+const char *mealName(
+    uint16_t meal
+) {
+    switch(meal) {
+        case kMDC_CTXT_GLU_MEAL_PREPRANDIAL: return "before_meal";
+        case kMDC_CTXT_GLU_MEAL_POSTPRANDIAL: return "after_meal";
+        case kMDC_CTXT_GLU_MEAL_FASTING: return "fasting";
+        case kMDC_CTXT_GLU_MEAL_CASUAL: return "casual";
+        case kMDC_CTXT_GLU_MEAL_BEDTIME: return "bedtime";
+        default: return "other";
+    }
+}
+
+std::string jsonString(
+    const std::string &s
+) {
+    std::string out = "\"";
+    for(unsigned char c : s) {
+        if('"'==c || '\\'==c) {
+            out += '\\';
+            out += char(c);
+        } else if(c<0x20 || 0x7F<=c) {
+            char buf[8];
+            snprintf(buf, sizeof(buf), "\\u%04x", c);
+            out += buf;
+        } else {
+            out += char(c);
+        }
+    }
+    return out + "\"";
+}
+
 time_t sampleEpoch(
     const Sample &s
 ) {
-    struct tm t;
-    memset(&t, 0, sizeof(t));
-    t.tm_min = s.minute;
-    t.tm_hour = s.hour;
-    t.tm_mday = s.day;
-    t.tm_mon = (s.month-1);
-    t.tm_year = (s.year - 1900);
-    t.tm_isdst = -1;    // let the timezone rules decide, 0 would mean "winter time" all year
-    return mktime(&t);
+    return localMktime(s.year, s.month, s.day, s.hour, s.minute, 0);
 }
 
 std::string sampleJson(
@@ -566,11 +973,16 @@ std::string sampleJson(
         range = ", \"range\":\"low\"";
     }
 
+    std::string meal;
+    if(0!=s.meal) {
+        meal = std::string(", \"meal\":\"") + mealName(s.meal) + "\"";
+    }
+
     char buf[320];
     snprintf(
         buf,
         sizeof(buf),
-        "{ \"id\":%6d, \"epoch\":%11" PRIu64 ", \"timestamp\":\"%04d/%02d/%02d %02d:%02d\", \"mg/dL\":%3d, \"mmol/L\":%10.6f, \"status\":%d%s }",
+        "{ \"id\":%6d, \"epoch\":%11" PRIu64 ", \"timestamp\":\"%04d/%02d/%02d %02d:%02d\", \"mg/dL\":%3d, \"mmol/L\":%10.6f, \"status\":%d%s%s }",
         id,
         (uint64_t)sampleEpoch(s),
         s.year,
@@ -581,7 +993,8 @@ std::string sampleJson(
         mgdl,
         (mgdl / 18.0),
         (int)s.status,
-        range
+        range,
+        meal.c_str()
     );
     return buf;
 }

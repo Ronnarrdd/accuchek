@@ -195,6 +195,13 @@ void RecordingTransport::record(
     fflush(out);
 }
 
+void RecordingTransport::note(
+    const std::string &text
+) {
+    fprintf(out, "# %s\n", text.c_str());
+    fflush(out);
+}
+
 int RecordingTransport::controlStatus(
     uint8_t *buffer,
     size_t len
