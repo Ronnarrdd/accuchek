@@ -33,6 +33,17 @@ Une trace contient les mesures du lecteur : ce sont des données de santé, à g
 
 Un tableau JSON, une mesure par objet : `id`, `epoch`, `timestamp` (heure du lecteur), `mg/dL`, `mmol/L`, `status` (statut brut du lecteur). Toutes les mesures du lecteur sont écrites, quel que soit leur statut. Les lectures hors échelle (valeurs spéciales `0x07FE` et `0x0802`, comme dans le pilote Tidepool) ont `"range":"high"` avec 601 mg/dL ou `"range":"low"` avec 9 mg/dL. Contrat : `contracts/accuchek_output.schema.json`.
 
+Le JSON est écrit en une seule fois, une fois la lecture terminée. En cas d'échec, stdout reste vide (aucune mesure partielle) et stderr contient une ligne `accuchek: <raison>`. Avec `ACCUCHEK_DBG=1`, les logs et dumps hexadécimaux vont sur stderr ; stdout ne change pas.
+
+| Code | `ExitCode` (`session.h`) | `contracts.AccuchekExit` | Cas |
+| --- | --- | --- | --- |
+| 0 | `kExitOk` | `OK` | lecture réussie, y compris lecteur vide (`[]`) ou libération ratée après la dernière mesure |
+| 1 | `kExitUsage` | `USAGE` | option inconnue, fichier de config, trace ou capture illisible |
+| 2 | `kExitNoDevice` | `NO_DEVICE` | aucun lecteur connu sur le bus USB |
+| 3 | `kExitAccessDenied` | `ACCESS_DENIED` | lecteur trouvé mais ouverture refusée (droits USB, pas root) |
+| 4 | `kExitTransfer` | `TRANSFER` | transfert USB échoué : timeout, lecteur débranché |
+| 5 | `kExitProtocol` | `PROTOCOL` | le lecteur a interrompu l'association ou répondu autre chose |
+
 ## Compiler et tester
 
 Dépendances Mageia : `gcc-c++`, `make`, `lib64usb1.0-devel`. Facultatif pour les tests : `libasan-devel` et `libubsan-devel` (activés automatiquement s'ils sont installés).
@@ -42,6 +53,7 @@ make -C services/device/accuchek-src          # binaire
 make -C services/device/accuchek-src test     # tests, lancés aussi par scripts/gate.sh
 make -C services/device/accuchek-src fuzz     # eval : 200 000 paquets mutés, 0 plantage attendu
 python3 -m evals.accuchek_replay              # eval : rejoue toutes les traces connues
+python3 -m evals.accuchek_errors              # eval : pannes injectées dans chaque trace
 ```
 
 Les tests de session rejouent des traces produites par le simulateur (`tests/sim.h`), qui construit les paquets du lecteur avec la même disposition que le pilote Tidepool. `tests/fixtures/two_segments.trace` en est une copie versionnée ; après une modification du simulateur : `ACCUCHEK_UPDATE_FIXTURES=1 make test`.

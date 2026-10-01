@@ -31,11 +31,23 @@
         virtual const char *errorName(int code) = 0;
     };
 
-    struct SessionError : std::runtime_error {
-        explicit SessionError(const std::string &msg) : std::runtime_error(msg) {}
+    // process exit codes, mirrored by contracts.AccuchekExit on the Glucofi side
+    enum ExitCode {
+        kExitOk = 0,            // all samples written (none if the meter is empty)
+        kExitUsage = 1,         // bad arguments, unreadable config, trace or capture file
+        kExitNoDevice = 2,      // no known meter on the USB bus
+        kExitAccessDenied = 3,  // meter found but not allowed to open it
+        kExitTransfer = 4,      // USB transfer failed: timeout, meter unplugged
+        kExitProtocol = 5,      // meter aborted or answered something unexpected
     };
 
-    // run the whole protocol, call onSample for every sample, whatever its status
+    struct SessionError : std::runtime_error {
+        SessionError(ExitCode _code, const std::string &msg) : std::runtime_error(msg), code(_code) {}
+        ExitCode code;
+    };
+
+    // run the whole protocol, call onSample for every sample, whatever its status;
+    // an empty meter is not an error (no sample), neither is a failed release
     void downloadSamples(
         Transport &transport,
         const std::function<void(const Sample &)> &onSample

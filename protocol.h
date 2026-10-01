@@ -48,6 +48,9 @@
     static constexpr uint16_t kACTION_TYPE_MDC_ACT_SEG_GET_INFO =          0x0C0D;
     static constexpr uint16_t kACTION_TYPE_MDC_ACT_SEG_GET_ID_LIST =       0x0C1E;
     static constexpr uint16_t kACTION_TYPE_MDC_ACT_SEG_TRIG_XFER =         0x0C1C;
+
+    // data response of the segment transfer trigger (tidepool DATA_RESPONSE)
+    static constexpr uint16_t kDATA_RESPONSE_EMPTY =                       0x0003;
     static constexpr uint16_t kACTION_TYPE_MDC_ACT_SEG_SET_TIME =          0x0C17;
 
     #define MDC_LIST                                \

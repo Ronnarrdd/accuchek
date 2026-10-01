@@ -41,7 +41,8 @@ uint8_t gMode = ' ';
 
 #undef GLOBAL
 
-#define LOG_OUT stdout
+// stdout carries the JSON output, logs never go there
+#define LOG_OUT stderr
 
 static void initLog() {
 
@@ -113,7 +114,7 @@ static void vMsg(
 ) {
     initLog();
 
-    if(gQuiet) {
+    if(gQuiet && Log::kFatal!=mode) {
         return;
     }
 

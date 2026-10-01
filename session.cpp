@@ -18,19 +18,19 @@ static void hexDump(
         auto e = (16 + i);
         for(auto j=i; j<e; ++j) {
             if(j<size) {
-                printf("%02X ", buffer[j]);
+                fprintf(stderr, "%02X ", buffer[j]);
             } else {
-                printf("   ");
+                fprintf(stderr, "   ");
             }
         }
-        printf("   ");
+        fprintf(stderr, "   ");
         for(auto j=i; j<e; ++j) {
             if(j<size) {
                 auto c = buffer[j];
-                putchar(isprint(c) ? c : '.');
+                fputc(isprint(c) ? c : '.', stderr);
             }
         }
-        putchar('\n');
+        fputc('\n', stderr);
         i = e;
     }
 }
@@ -50,7 +50,7 @@ void hexDumpWithHeader(
         (int)size
     );
     hexDump(buffer, size);
-    printf("BUFFER END ============================================================================================\n\n");
+    fprintf(stderr, "BUFFER END ============================================================================================\n\n");
 }
 
 /*
@@ -73,10 +73,11 @@ void downloadSamples(
     int phaseIndex = 1;
 
     auto fail = [&](
+        ExitCode code,
         const std::string &msg
     ) {
         LOG_WRN("%s -- giving up", msg.c_str());
-        throw SessionError(msg);
+        throw SessionError(code, msg);
     };
 
     // send out the message at the start of buffer
@@ -89,6 +90,7 @@ void downloadSamples(
         auto written = transport.bulkOut(buffer, len);
         if(written<0 || size_t(written)!=len) {
             fail(
+                kExitTransfer,
                 std::string("failed to send message ") + msgName + ": " +
                 (written<0 ? transport.errorName(written) : "short write")
             );
@@ -105,7 +107,7 @@ void downloadSamples(
         LOG_NFO("phase %d: receiving message %s", phaseIndex, msgName);
         auto bytesRead = transport.bulkIn(buffer, maxLen);
         if(bytesRead<0) {
-            fail(std::string("failed to receive message ") + msgName + ": " + transport.errorName(bytesRead));
+            fail(kExitTransfer, std::string("failed to receive message ") + msgName + ": " + transport.errorName(bytesRead));
         }
         LOG_NFO("successfully read message \"%s\" from device", msgName);
         hexDumpWithHeader(msgName, buffer, bytesRead);
@@ -115,14 +117,14 @@ void downloadSamples(
         // the device may abort the association instead of answering
         Reader r(buffer, received);
         if(kAPDU_TYPE_ASSOCIATION_ABORT==r.u16() && r.ok) {
-            fail(std::string("received association abort request instead of ") + msgName);
+            fail(kExitProtocol, std::string("received association abort request instead of ") + msgName);
         }
         return bytesRead;
     };
 
     auto updateInvokeId = [&]() {
         if(!readInvokeId(buffer, received, invokeId)) {
-            fail("message too short to hold an invoke id (" + std::to_string(received) + " bytes)");
+            fail(kExitProtocol, "message too short to hold an invoke id (" + std::to_string(received) + " bytes)");
         }
         LOG_NFO("invokeId after phase %d is: %d", phaseIndex, (int)invokeId);
     };
@@ -132,8 +134,11 @@ void downloadSamples(
         #define PHASE_1 "initial control transfer in"
         LOG_NFO("phase 1: " PHASE_1);
         auto bytesRead = transport.controlStatus(buffer, 2);
-        if(bytesRead<=0) {
-            fail(std::string("failed " PHASE_1 ": ") + transport.errorName(bytesRead));
+        if(bytesRead<0) {
+            fail(kExitTransfer, std::string("failed " PHASE_1 ": ") + transport.errorName(bytesRead));
+        }
+        if(0==bytesRead) {
+            fail(kExitTransfer, "failed " PHASE_1 ": no data");
         }
         hexDumpWithHeader(PHASE_1, buffer, bytesRead);
         ++phaseIndex;
@@ -152,7 +157,7 @@ void downloadSamples(
     uint16_t pmStoreHandle = 0;
     uint16_t nbSegments = 0;
     if(false==parseConfigInfo(buffer, received, pmStoreHandle, nbSegments)) {
-        fail("failed to parse config info");
+        fail(kExitProtocol, "failed to parse config info");
     }
 
     // protocol step: send "config well received" response
@@ -178,6 +183,7 @@ void downloadSamples(
     send("request segments", buildTriggerTransfer(buffer, invokeId, pmStoreHandle));
 
     // step: read segment stream header answer
+    auto empty = false;
     {
         auto bytesRead = receive("segment headers");
         updateInvokeId();
@@ -187,11 +193,11 @@ void downloadSamples(
             size_t o = 20;
             dataResponse = be16r(buffer, o);
         }
-        if(22==bytesRead && 0!=dataResponse) {
-            if(3==dataResponse) {
-                fail("empty data segment");
-            }
-            fail("error retrieving data, code = " + std::to_string(dataResponse));
+        if(22==bytesRead && kDATA_RESPONSE_EMPTY==dataResponse) {
+            LOG_NFO("meter holds no sample");
+            empty = true;
+        } else if(22==bytesRead && 0!=dataResponse) {
+            fail(kExitProtocol, "error retrieving data, code = " + std::to_string(dataResponse));
         }
 
         uint16_t headerValue = -1;
@@ -200,19 +206,19 @@ void downloadSamples(
             headerValue = be16r(buffer, o);
         }
         if(bytesRead<22 || kACTION_TYPE_MDC_ACT_SEG_TRIG_XFER!=headerValue) {
-            fail("unexpected / incorrect answer packet");
+            fail(kExitProtocol, "unexpected / incorrect answer packet");
         }
     }
 
     // step: read segments one by one
-    while(true) {
+    while(!empty) {
         receive("data segment");
         updateInvokeId();
 
         Segment segment;
         std::string error;
         if(!parseSegment(buffer, received, segment, error)) {
-            fail(error);
+            fail(kExitProtocol, error);
         }
         for(const auto &s : segment.samples) {
             LOG_NFO(
@@ -241,9 +247,14 @@ void downloadSamples(
         }
     }
 
-    // protocol step: disconnect cleanly from device
-    send("release request", buildReleaseRequest(buffer));
-    receive("release confirmation");
+    // protocol step: disconnect cleanly from device; every segment is acked by
+    // now, so a failed release must not throw the samples away
+    try {
+        send("release request", buildReleaseRequest(buffer));
+        receive("release confirmation");
+    } catch(const SessionError &e) {
+        LOG_WRN("release failed, samples kept: %s", e.what());
+    }
 }
 
 } // namespace accuchek

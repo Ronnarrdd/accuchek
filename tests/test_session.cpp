@@ -57,15 +57,26 @@ static std::vector<Sample> download(
     return samples;
 }
 
-static std::string sessionError(
+struct Failure {
+    int code;
+    std::string msg;
+};
+
+static Failure sessionFailure(
     const std::string &trace
 ) {
     try {
         download(trace);
     } catch(const SessionError &e) {
-        return e.what();
+        return {e.code, e.what()};
     }
-    return "";
+    return {kExitOk, ""};
+}
+
+static std::string sessionError(
+    const std::string &trace
+) {
+    return sessionFailure(trace).msg;
 }
 
 TEST(session_downloads_all_segments) {
@@ -93,18 +104,53 @@ TEST(session_with_many_segments) {
 
 TEST(session_association_abort) {
     auto trace = replaceLine(sim::sessionTrace(kTwoSegments), kLineMdsAnswer, "< E60000020000");
-    CHECK(std::string::npos!=sessionError(trace).find("abort"));
+    auto f = sessionFailure(trace);
+    CHECK_EQ(f.code, kExitProtocol);
+    CHECK(std::string::npos!=f.msg.find("abort"));
 }
 
-TEST(session_empty_meter) {
-    auto headers = sim::segmentHeaders(0x0013, 0x0100, 3);
+// an empty meter used to end in an error, tidepool treats it as no data
+TEST(session_empty_meter_is_not_an_error) {
+    ReplayTransport *t = 0;
+    auto samples = download(sim::sessionTrace({}), &t);
+    CHECK_EQ(samples.size(), 0u);
+    CHECK(t->finished());
+}
+
+TEST(session_data_response_error) {
+    auto headers = sim::segmentHeaders(0x0013, 0x0100, 2);
     auto trace = replaceLine(sim::sessionTrace(kTwoSegments), kLineSegmentHeaders, sim::line('<', headers));
-    CHECK(std::string::npos!=sessionError(trace).find("empty"));
+    auto f = sessionFailure(trace);
+    CHECK_EQ(f.code, kExitProtocol);
+    CHECK(std::string::npos!=f.msg.find("code = 2"));
 }
 
 TEST(session_timeout) {
     auto trace = replaceLine(sim::sessionTrace(kTwoSegments), kLineFirstSegment, "< !-7");
-    CHECK(std::string::npos!=sessionError(trace).find("timed out"));
+    auto f = sessionFailure(trace);
+    CHECK_EQ(f.code, kExitTransfer);
+    CHECK(std::string::npos!=f.msg.find("timed out"));
+}
+
+TEST(session_meter_unplugged) {
+    auto trace = replaceLine(sim::sessionTrace(kTwoSegments), kLineMdsAnswer, "< !-4");
+    auto f = sessionFailure(trace);
+    CHECK_EQ(f.code, kExitTransfer);
+    CHECK(std::string::npos!=f.msg.find("MDS attribute answer"));
+}
+
+TEST(session_garbage_answer) {
+    auto trace = replaceLine(sim::sessionTrace(kTwoSegments), kLineSegmentHeaders, "< E700000200");
+    CHECK_EQ(sessionFailure(trace).code, kExitProtocol);
+}
+
+TEST(session_release_failure_keeps_samples) {
+    auto full = sim::sessionTrace(kTwoSegments);
+    auto lastLine = full.rfind("\n<") + 1;
+    auto trace = full.substr(0, lastLine) + "< !-4\n";
+    CHECK_EQ(sessionError(trace), std::string(""));
+    CHECK_EQ(download(trace).size(), 3u);
+    CHECK_EQ(download(full.substr(0, lastLine)).size(), 3u);
 }
 
 TEST(session_detects_unexpected_outgoing_message) {
@@ -170,6 +216,7 @@ TEST(fixture_traces_match_simulator) {
     checkFixture("tests/fixtures/two_segments.trace", sim::sessionTrace(kTwoSegments));
     checkFixture("tests/fixtures/summer_and_dst.trace", sim::sessionTrace(kSummerAndDst));
     checkFixture("tests/fixtures/flags.trace", sim::sessionTrace(kFlags));
+    checkFixture("tests/fixtures/empty_meter.trace", sim::sessionTrace({}));
 }
 
 // command line: run the real binary on a trace
@@ -177,12 +224,14 @@ TEST(fixture_traces_match_simulator) {
 struct CliResult {
     int code;
     std::string out;
+    std::string err;
 };
 
 // run the binary with args from directory cwd (default: a fresh empty one)
 static CliResult runBinary(
     const std::string &args,
-    const std::string &cwd = ""
+    const std::string &cwd = "",
+    const std::string &env = "env -u ACCUCHEK_DBG"
 ) {
     std::string dir = cwd;
     char tmpdir[] = "/tmp/accuchek-cwd-XXXXXX";
@@ -190,10 +239,12 @@ static CliResult runBinary(
         CHECK(0!=mkdtemp(tmpdir));
         dir = tmpdir;
     }
+    char errPath[] = "/tmp/accuchek-err-XXXXXX";
+    close(mkstemp(errPath));
     auto bin = getenv("ACCUCHEK_BIN");
-    auto cmd = "cd '" + dir + "' && env -u ACCUCHEK_DBG " + (bin ? bin : "./accuchek") + " " + args + " 2>/dev/null";
+    auto cmd = "cd '" + dir + "' && " + env + " " + (bin ? bin : "./accuchek") + " " + args + " 2>" + errPath;
     auto pipe = popen(cmd.c_str(), "r");
-    CliResult result = {-1, ""};
+    CliResult result = {-1, "", ""};
     char chunk[4096];
     size_t n;
     while(0<(n = fread(chunk, 1, sizeof(chunk), pipe))) {
@@ -201,6 +252,8 @@ static CliResult runBinary(
     }
     auto status = pclose(pipe);
     result.code = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+    readFile(errPath, result.err);
+    unlink(errPath);
     if(cwd.empty()) {
         rmdir(tmpdir);
     }
@@ -220,10 +273,11 @@ static std::string writeTemp(
 
 static CliResult runCli(
     const std::string &trace,
-    const std::string &args = ""
+    const std::string &args = "",
+    const std::string &env = "env -u ACCUCHEK_DBG"
 ) {
     auto path = writeTemp(trace);
-    auto result = runBinary("--replay " + path + " " + args);
+    auto result = runBinary("--replay " + path + " " + args, "", env);
     unlink(path.c_str());
     return result;
 }
@@ -251,8 +305,9 @@ TEST(cli_ignores_config_txt_in_current_directory) {
 
 TEST(cli_missing_config_file_is_an_error) {
     auto r = runBinary("--config /nonexistent/config.txt --known-devices");
-    CHECK(0!=r.code);
+    CHECK_EQ(r.code, kExitUsage);
     CHECK_EQ(r.out, std::string(""));
+    CHECK_EQ(r.err, std::string("accuchek: cannot read config file /nonexistent/config.txt\n"));
 }
 
 TEST(cli_outputs_json_array) {
@@ -276,8 +331,68 @@ TEST(cli_outputs_flagged_samples) {
     CHECK(std::string::npos!=r.out.find("\"mg/dL\":140, \"mmol/L\":  7.777778, \"status\":1 }"));
 }
 
-TEST(cli_fails_on_broken_session) {
+// failures used to leave "[" plus some samples on stdout and exit 1, whatever the cause
+TEST(cli_timeout_exit_code_and_message) {
     auto trace = replaceLine(sim::sessionTrace(kTwoSegments), kLineFirstSegment, "< !-7");
     auto r = runCli(trace);
-    CHECK(0!=r.code);
+    CHECK_EQ(r.code, kExitTransfer);
+    CHECK_EQ(r.out, std::string(""));
+    CHECK_EQ(r.err, std::string("accuchek: failed to receive message data segment: Operation timed out\n"));
+}
+
+TEST(cli_failure_after_some_samples_writes_none) {
+    auto lastSegment = kLineFirstSegment + 2;
+    auto trace = replaceLine(sim::sessionTrace(kTwoSegments), lastSegment, "< !-4");
+    auto r = runCli(trace);
+    CHECK_EQ(r.code, kExitTransfer);
+    CHECK_EQ(r.out, std::string(""));
+    CHECK(std::string::npos!=r.err.find("2 samples received before the error, none written"));
+}
+
+TEST(cli_abort_exit_code) {
+    auto trace = replaceLine(sim::sessionTrace(kTwoSegments), kLineMdsAnswer, "< E60000020000");
+    auto r = runCli(trace);
+    CHECK_EQ(r.code, kExitProtocol);
+    CHECK_EQ(r.out, std::string(""));
+    CHECK(0==r.err.find("accuchek: received association abort"));
+}
+
+TEST(cli_empty_meter_outputs_empty_array) {
+    auto r = runCli(sim::sessionTrace({}));
+    CHECK_EQ(r.code, kExitOk);
+    CHECK_EQ(r.out, std::string("[\n]\n"));
+    CHECK_EQ(r.err, std::string(""));
+}
+
+TEST(cli_unreadable_trace_is_a_usage_error) {
+    auto r = runBinary("--replay /nonexistent.trace");
+    CHECK_EQ(r.code, kExitUsage);
+    CHECK_EQ(r.out, std::string(""));
+    auto bad = runCli("garbage line\n");
+    CHECK_EQ(bad.code, kExitUsage);
+    CHECK(0==bad.err.find("accuchek: bad trace"));
+}
+
+TEST(cli_unknown_option_is_a_usage_error) {
+    auto r = runBinary("--bogus");
+    CHECK_EQ(r.code, kExitUsage);
+}
+
+// ACCUCHEK_DBG used to send logs and hexdumps to stdout, inside the JSON
+TEST(cli_debug_logs_stay_off_stdout) {
+    auto quiet = runCli(sim::sessionTrace(kTwoSegments));
+    auto debug = runCli(sim::sessionTrace(kTwoSegments), "", "env ACCUCHEK_DBG=1");
+    CHECK_EQ(debug.code, kExitOk);
+    CHECK_EQ(debug.out, quiet.out);
+    CHECK(std::string::npos!=debug.err.find("BUFFER START"));
+    CHECK_EQ(quiet.err, std::string(""));
+}
+
+TEST(cli_not_root_exit_code) {
+    if(0==geteuid()) {
+        return;
+    }
+    auto r = runBinary("");
+    CHECK_EQ(r.code, kExitAccessDenied);
+    CHECK(0==r.err.find("accuchek: must be root"));
 }

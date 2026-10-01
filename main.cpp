@@ -5,6 +5,10 @@
      usage: accuchek [DEVICE_INDEX] [--config FILE] [--capture TRACE] [--replay TRACE]
             accuchek [--config FILE] --known-devices
 
+     stdout: a JSON array of samples, written only once the download succeeded
+     stderr: "accuchek: <reason>" on failure, logs when ACCUCHEK_DBG is set
+     exit codes: see ExitCode in session.h
+
      compile with: make
 
  */
@@ -21,16 +25,39 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdarg.h>
+#include <memory>
 #include <algorithm>
 #include <libusb-1.0/libusb.h>
+
+extern bool gQuiet;
 
 using namespace accuchek;
 
 // globals
 static Config g_config = defaultConfig();
-static FILE *g_output = 0;
-static auto g_lineCount = 0;
-static auto g_firstLine = true;
+static std::vector<Sample> g_samples;
+static std::string g_accessDenied;  // last known meter we were not allowed to open
+
+// reason the program stops, reported on stderr with its exit code
+struct Fatal {
+    ExitCode code;
+    std::string msg;
+};
+
+[[noreturn]] static void die(
+    ExitCode code,
+    const char *format,
+    ...
+) {
+    char msg[1024];
+    va_list arg;
+    va_start(arg, format);
+    vsnprintf(msg, sizeof(msg), format, arg);
+    va_end(arg);
+    LOG_WRN("%s -- giving up", msg);
+    throw Fatal{code, msg};
+}
 
 // add a config file to the built-in device list
 static void loadConfig(
@@ -38,8 +65,7 @@ static void loadConfig(
 ) {
     std::string text;
     if(false==readFile(path, text)) {
-        fprintf(stderr, "accuchek: cannot read config file %s\n", path);
-        exit(1);
+        die(kExitUsage, "cannot read config file %s", path);
     }
     g_config = configWithFile(text);
 }
@@ -264,28 +290,39 @@ struct LibusbTransport : Transport {
 
 */
 
-// write one sample as JSON
-static void writeSample(
-    const Sample &s
+// write all samples as one JSON array
+static void writeSamples(
+    FILE *out
 ) {
-    fprintf(
-        g_output,
-        "%s\n    %s",
-        (g_firstLine ? "" : ","),
-        sampleJson(s, g_lineCount++).c_str()
-    );
-    g_firstLine = false;
+    fputc('[', out);
+    for(size_t i=0; i<g_samples.size(); ++i) {
+        fprintf(out, "%s\n    %s", (0==i ? "" : ","), sampleJson(g_samples[i], i).c_str());
+    }
+    fputs("\n]\n", out);
+    fflush(out);
 }
 
-// run the protocol, exit(1) on failure
+// run the protocol, keep samples in memory until it succeeds
 static void runSession(
     Transport &transport
 ) {
     try {
-        downloadSamples(transport, writeSample);
-    } catch(const SessionError &) {
-        exit(1);
+        downloadSamples(transport, [](const Sample &s) { g_samples.push_back(s); });
+    } catch(const SessionError &e) {
+        auto received = g_samples.size();
+        g_samples.clear();
+        if(0<received) {
+            die(e.code, "%s (%d samples received before the error, none written)", e.what(), (int)received);
+        }
+        die(e.code, "%s", e.what());
     }
+}
+
+// exit code for a failed libusb call on the meter
+static ExitCode usbFailure(
+    int code
+) {
+    return (LIBUSB_ERROR_ACCESS==code ? kExitAccessDenied : kExitTransfer);
 }
 
 // open an accuchek USB device and download data from it
@@ -298,8 +335,7 @@ static void operateDevice(
     libusb_device_handle *devHandle = 0;
     auto fail0 = libusb_open(dev, &devHandle);
     if(fail0) {
-        LOG_WRN("libusb_open failed on selected device -- giving up");
-        exit(1);
+        die(usbFailure(fail0), "cannot open meter: %s", libusb_strerror(fail0));
     }
     usbDevice.devHandle = devHandle;
 
@@ -310,21 +346,21 @@ static void operateDevice(
     );
 
     // load the configuration chosen during detection phase
-    if(libusb_set_configuration(devHandle, usbDevice.configValue)<0) {
-        LOG_WRN("failed to configure selected device -- giving up");
-        exit(1);
+    auto fail1 = libusb_set_configuration(devHandle, usbDevice.configValue);
+    if(fail1<0) {
+        die(usbFailure(fail1), "cannot configure meter: %s", libusb_strerror(fail1));
     }
 
     // claim interface
-    if(libusb_claim_interface(devHandle, usbDevice.interfaceNumber)<0) {
-        LOG_WRN("failed to claim interface -- giving up");
-        exit(1);
+    auto fail2 = libusb_claim_interface(devHandle, usbDevice.interfaceNumber);
+    if(fail2<0) {
+        die(usbFailure(fail2), "cannot claim meter interface: %s", libusb_strerror(fail2));
     }
 
     // set alt setting chosen during detection phase on interface
-    if(libusb_set_interface_alt_setting(devHandle, usbDevice.interfaceNumber, usbDevice.alternateSetting)<0) {
-        LOG_WRN("failed to set alt setting -- giving up");
-        exit(1);
+    auto fail3 = libusb_set_interface_alt_setting(devHandle, usbDevice.interfaceNumber, usbDevice.alternateSetting);
+    if(fail3<0) {
+        die(usbFailure(fail3), "cannot set meter alt setting: %s", libusb_strerror(fail3));
     }
 
     // make some noise
@@ -335,11 +371,16 @@ static void operateDevice(
     if(0!=capturePath) {
         auto fp = fopen(capturePath, "w");
         if(0==fp) {
-            LOG_WRN("cannot write trace %s -- giving up", capturePath);
-            exit(1);
+            die(kExitUsage, "cannot write trace %s", capturePath);
         }
+        // keep the trace of a failed download too, that is when it is most useful
         RecordingTransport recording(usb, fp);
-        runSession(recording);
+        try {
+            runSession(recording);
+        } catch(const Fatal &) {
+            fclose(fp);
+            throw;
+        }
         fclose(fp);
     } else {
         runSession(usb);
@@ -361,6 +402,12 @@ static void addDeviceIfAccuChek(
     auto fail = libusb_get_device_descriptor(dev, &dsc);
     if(0!=fail) {
         LOG_WRN("libusb_get_device_descriptor failed");
+        return;
+    }
+
+    // only look closer at known meters, never open anything else
+    if(!isDeviceAllowed(g_config, dsc.idVendor, dsc.idProduct)) {
+        LOG_NFO("not a match, %04x:%04x is not a known meter", (int)dsc.idVendor, (int)dsc.idProduct);
         return;
     }
 
@@ -440,7 +487,20 @@ static void addDeviceIfAccuChek(
         libusb_device_handle *devHandle = 0;
         auto fail1 = libusb_open(dev, &devHandle);
         if(fail1) {
-            LOG_WRN("libusb_open failed, giving up");
+            LOG_WRN("libusb_open failed: %s", libusb_strerror(fail1));
+            if(LIBUSB_ERROR_ACCESS==fail1) {
+                char where[128];
+                snprintf(
+                    where,
+                    sizeof(where),
+                    "%04x:%04x on bus %03d device %03d",
+                    (int)dsc.idVendor,
+                    (int)dsc.idProduct,
+                    (int)libusb_get_bus_number(dev),
+                    (int)libusb_get_device_address(dev)
+                );
+                g_accessDenied = where;
+            }
             break;
         }
 
@@ -474,28 +534,19 @@ static void addDeviceIfAccuChek(
             break;
         }
 
-        // check that device and vendor is in list of known devices
-        if(isDeviceAllowed(g_config, dsc.idVendor, dsc.idProduct)) {
-            // we have a new valid device, add it to the list
-            LOG_NFO("========> found a matching USB device");
-            validDevices.emplace_back(
-                dev,
-                dsc.idVendor,
-                dsc.idProduct,
-                vendor,
-                product,
-                out,
-                in,
-                cfg,
-                altSetting
-            );
-        } else {
-            LOG_NFO(
-                "nope: looks like it, but thats not the one. this device has mfgr=%s device=%s\n",
-                vendor,
-                product
-            );
-        }
+        // we have a new valid device, add it to the list
+        LOG_NFO("========> found a matching USB device: mfgr=%s device=%s", vendor, product);
+        validDevices.emplace_back(
+            dev,
+            dsc.idVendor,
+            dsc.idProduct,
+            vendor,
+            product,
+            out,
+            in,
+            cfg,
+            altSetting
+        );
         libusb_close(devHandle);
     } while(0);
 
@@ -529,8 +580,10 @@ static void findAndOperateAccuChek(
 
     // if no devices found, bail
     if(0==validDevices.size()) {
-        LOG_WRN("found no accuchek device whatsoever -- giving up");
-        exit(1);
+        if(!g_accessDenied.empty()) {
+            die(kExitAccessDenied, "permission denied on USB meter %s", g_accessDenied.c_str());
+        }
+        die(kExitNoDevice, "no Accu-Chek meter found on the USB bus");
     }
 
     // make some noise
@@ -541,12 +594,7 @@ static void findAndOperateAccuChek(
 
     // make sure we user referes to a valid device
     if(int(validDevices.size())<=int(ix)) {
-        LOG_WRN(
-            "user selected device %d but only %d devices were found -- aborting",
-            ix,
-            (int)validDevices.size()
-        );
-        exit(1);
+        die(kExitNoDevice, "meter #%d selected but only %d found", ix, (int)validDevices.size());
     }
 
     // select a specific device (first seen or as specified by user)
@@ -576,8 +624,7 @@ static libusb_context *openLibUSB() {
     libusb_context *libUSBContext = 0;
     auto fail = libusb_init(&libUSBContext);
     if(0!=fail || 0==libUSBContext) {
-        LOG_WRN("libusb init failure");
-        exit (1);
+        die(kExitTransfer, "cannot initialize libusb: %s", libusb_strerror(fail));
     }
 
     LOG_NFO("libusb opened OK");
@@ -598,20 +645,19 @@ static void replayTrace(
 ) {
     std::string text;
     if(false==readFile(path, text)) {
-        LOG_WRN("cannot read trace %s -- giving up", path);
-        exit(1);
+        die(kExitUsage, "cannot read trace %s", path);
     }
+    std::unique_ptr<ReplayTransport> replay;
     try {
-        ReplayTransport replay(text);
-        runSession(replay);
+        replay.reset(new ReplayTransport(text));
     } catch(const std::runtime_error &e) {
-        LOG_WRN("bad trace %s: %s -- giving up", path, e.what());
-        exit(1);
+        die(kExitUsage, "bad trace %s: %s", path, e.what());
     }
+    runSession(*replay);
 }
 
-// entry point
-int main(
+// everything but the final JSON output, throws Fatal on failure
+static void run(
     int argc,
     char *argv[]
 ) {
@@ -631,8 +677,10 @@ int main(
             capturePath = argv[++i];
         } else if(0==strcmp(argv[i], "--replay") && i+1<argc) {
             replayPath = argv[++i];
-        } else {
+        } else if('-'!=argv[i][0]) {
             deviceIndex = atoi(argv[i]);
+        } else {
+            die(kExitUsage, "unknown or incomplete option %s", argv[i]);
         }
     }
 
@@ -643,33 +691,15 @@ int main(
         for(const auto &device : allowedDevices(g_config)) {
             printf("%s\n", device.c_str());
         }
-        return 0;
+        exit(kExitOk);
     }
 
     // must be root
     if(0==replayPath) {
         auto euid = geteuid();
-        LOG_FTL(0!=euid, "must be root, euid is %d, bailing", euid);
-    }
-
-    // be silent unless asked to talk
-    if(0!=getenv("ACCUCHEK_DBG")) {
-        // unbuffer stdout/stderr
-        setvbuf(stdout, 0, _IONBF, 0);
-        setvbuf(stderr, 0, _IONBF, 0);
-        g_output = stdout;
-    } else {
-
-        // dup stdout
-        int newFD = dup(1);
-
-        // batten down the hatches
-        close(1);
-        close(2);
-
-        // fdopen dup'd stdout
-        g_output = fdopen(newFD, "wb");
-        fprintf(g_output, "[");
+        if(0!=euid) {
+            die(kExitAccessDenied, "must be root, euid is %d", (int)euid);
+        }
     }
 
     // make some noise
@@ -686,9 +716,22 @@ int main(
 
         closeLibUSB(libUSBContext);
     }
+}
 
-    // clean up and bail
-    fprintf(g_output, "\n]\n");
+// entry point
+int main(
+    int argc,
+    char *argv[]
+) {
+    // be silent unless asked to talk (on stderr)
+    gQuiet = (0==getenv("ACCUCHEK_DBG"));
+    try {
+        run(argc, argv);
+    } catch(const Fatal &f) {
+        fprintf(stderr, "accuchek: %s\n", f.msg.c_str());
+        return f.code;
+    }
+    writeSamples(stdout);
     LOG_NFO("done");
-    return 0;
+    return kExitOk;
 }

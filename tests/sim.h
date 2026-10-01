@@ -144,7 +144,8 @@
         return Bytes(buf, buf + n);
     }
 
-    // trace of a complete session, one inner vector per data segment
+    // trace of a complete session, one inner vector per data segment,
+    // no segment at all for an empty meter
     inline std::string sessionTrace(
         const std::vector<std::vector<Record>> &segments,
         uint16_t pmStoreHandle = 0x0100
@@ -159,7 +160,7 @@
         t += line('>', sentWith([&](uint8_t *b) { return accuchek::buildSegmentInfoRequest(b, 0x0011, pmStoreHandle); }));
         t += line('<', actionResponse(0x0012, pmStoreHandle));
         t += line('>', sentWith([&](uint8_t *b) { return accuchek::buildTriggerTransfer(b, 0x0012, pmStoreHandle); }));
-        t += line('<', segmentHeaders(0x0013, pmStoreHandle));
+        t += line('<', segmentHeaders(0x0013, pmStoreHandle, segments.empty() ? accuchek::kDATA_RESPONSE_EMPTY : 0));
         uint32_t index = 0;
         for(size_t k=0; k<segments.size(); ++k) {
             uint16_t invokeId = 0x0020 + k;
