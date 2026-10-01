@@ -410,7 +410,8 @@ time_t sampleEpoch(
     t.tm_mday = s.day;
     t.tm_mon = (s.month-1);
     t.tm_year = (s.year - 1900);
-    return timelocal(&t);
+    t.tm_isdst = -1;    // let the timezone rules decide, 0 would mean "winter time" all year
+    return mktime(&t);
 }
 
 std::string sampleJson(

@@ -124,6 +124,28 @@ TEST(epoch_in_winter_is_local_time) {
     CHECK_EQ((long long)sampleEpoch(s), 1610694000LL);
 }
 
+// the meter shows 07:36 on 2 July 2026: that is 05:36 UTC in Paris (CEST)
+TEST(epoch_in_summer_is_local_time) {
+    Sample s = {2026, 7, 2, 7, 36, 120, 0};
+    CHECK_EQ((long long)sampleEpoch(s), 1782970560LL);
+}
+
+TEST(epoch_around_dst_changes) {
+    Sample beforeSpring = {2026, 3, 29, 1, 59, 100, 0};
+    Sample afterSpring = {2026, 3, 29, 3, 0, 100, 0};
+    Sample beforeAutumn = {2026, 10, 25, 1, 59, 100, 0};
+    Sample afterAutumn = {2026, 10, 25, 3, 0, 100, 0};
+    CHECK_EQ((long long)sampleEpoch(beforeSpring), 1774745940LL);
+    CHECK_EQ((long long)sampleEpoch(afterSpring), 1774746000LL);
+    CHECK_EQ((long long)sampleEpoch(beforeAutumn), 1792886340LL);
+    CHECK_EQ((long long)sampleEpoch(afterAutumn), 1792893600LL);
+
+    // 02:30 happens twice on 25 October: either instant is acceptable
+    Sample ambiguous = {2026, 10, 25, 2, 30, 100, 0};
+    auto e = (long long)sampleEpoch(ambiguous);
+    CHECK(1792888200LL==e || 1792891800LL==e);
+}
+
 TEST(sample_json_format) {
     Sample s = {2021, 1, 15, 8, 0, 133, 0};
     CHECK_EQ(

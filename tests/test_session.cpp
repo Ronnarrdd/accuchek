@@ -120,9 +120,23 @@ TEST(session_truncated_trace) {
 
 // checked-in copy of the simulated session, replayed by evals/accuchek_replay.py
 // regenerate with: ACCUCHEK_UPDATE_FIXTURES=1 make test
-TEST(fixture_trace_matches_simulator) {
-    static const char *path = "tests/fixtures/two_segments.trace";
-    auto expected = sim::sessionTrace(kTwoSegments);
+static const std::vector<std::vector<sim::Record>> kSummerAndDst = {
+    {
+        {2026, 3, 29, 1, 59, 101, 0},
+        {2026, 3, 29, 3, 0, 102, 0},
+        {2026, 7, 2, 7, 36, 120, 0},
+    },
+    {
+        {2026, 10, 25, 1, 59, 103, 0},
+        {2026, 10, 25, 3, 0, 104, 0},
+        {2026, 12, 24, 19, 0, 105, 0},
+    },
+};
+
+static void checkFixture(
+    const char *path,
+    const std::string &expected
+) {
     if(getenv("ACCUCHEK_UPDATE_FIXTURES")) {
         auto fp = fopen(path, "w");
         CHECK(0!=fp);
@@ -132,6 +146,11 @@ TEST(fixture_trace_matches_simulator) {
     std::string text;
     CHECK(readFile(path, text));
     CHECK_EQ(text, expected);
+}
+
+TEST(fixture_traces_match_simulator) {
+    checkFixture("tests/fixtures/two_segments.trace", sim::sessionTrace(kTwoSegments));
+    checkFixture("tests/fixtures/summer_and_dst.trace", sim::sessionTrace(kSummerAndDst));
 }
 
 // command line: run the real binary on a trace
