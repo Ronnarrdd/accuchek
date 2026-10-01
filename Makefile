@@ -1,4 +1,4 @@
-.PHONY: all clean test
+.PHONY: all clean test fuzz
 SHELL = /bin/bash
 CXX = g++ -std=c++17
 LIBS = -lusb-1.0 -lm
@@ -10,7 +10,8 @@ SANITIZE := $(shell echo 'int main(){}' | $(CXX) -x c++ -fsanitize=address,undef
 TEST_CFLAGS = -O0 -g -fno-omit-frame-pointer -D_GLIBCXX_ASSERTIONS $(SANITIZE)
 
 LIB_SRCS = protocol.cpp session.cpp trace.cpp log.cpp
-TEST_SRCS = tests/check.cpp tests/test_protocol.cpp tests/test_session.cpp
+TEST_SRCS = tests/check.cpp tests/fuzz.cpp tests/test_protocol.cpp tests/test_session.cpp tests/test_bounds.cpp
+FUZZ_SRCS = tests/fuzz.cpp tests/fuzz_main.cpp
 
 all: accuchek
 	@echo done.
@@ -38,6 +39,14 @@ accuchek: .objs/main.o $(LIB_SRCS:%.cpp=.objs/%.o)
 
 test: accuchek .objs/test/run_tests
 	@ACCUCHEK_BIN="$(CURDIR)/accuchek" .objs/test/run_tests
+
+# periodic eval: mutated packets against guard pages, FUZZ_ARGS="--seed N --count N"
+.objs/test/fuzz: $(LIB_SRCS:%.cpp=.objs/test/%.o) $(FUZZ_SRCS:%.cpp=.objs/test/%.o)
+	@echo lnk -- $@
+	@$(CXX) $(TEST_CFLAGS) -o $@ $^ $(LIBS)
+
+fuzz: .objs/test/fuzz
+	@.objs/test/fuzz $(FUZZ_ARGS)
 
 clean:
 	rm -r -f accuchek

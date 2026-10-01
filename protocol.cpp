@@ -128,6 +128,53 @@ uint32_t be32r(
     );
 }
 
+bool Reader::skip(
+    size_t n
+) {
+    if(!has(n)) {
+        ok = false;
+        return false;
+    }
+    offset += n;
+    return true;
+}
+
+uint8_t Reader::u8() {
+    if(!has(1)) {
+        ok = false;
+        return 0;
+    }
+    return data[offset++];
+}
+
+uint16_t Reader::u16() {
+    if(!has(2)) {
+        ok = false;
+        return 0;
+    }
+    return be16r(data, offset);
+}
+
+uint32_t Reader::u32() {
+    if(!has(4)) {
+        ok = false;
+        return 0;
+    }
+    return be32r(data, offset);
+}
+
+Reader Reader::sub(
+    size_t n
+) {
+    if(!has(n)) {
+        ok = false;
+        return Reader(data, 0, 1);
+    }
+    Reader r(data + offset, n);
+    offset += n;
+    return r;
+}
+
 size_t buildAssociationResponse(
     uint8_t *buffer
 ) {
@@ -270,71 +317,82 @@ size_t buildReleaseRequest(
     return (p-buffer);
 }
 
-uint16_t readInvokeId(
-    const uint8_t *buffer
+bool readInvokeId(
+    const uint8_t *buffer,
+    size_t len,
+    uint16_t &invokeId
 ) {
-    size_t offset = 6;
-    return be16r(buffer, offset);
+    Reader r(buffer, len, 6);
+    invokeId = r.u16();
+    return r.ok;
 }
 
-// find object of a given "class" in a config info message
-static const uint8_t *findObject(
-    const uint8_t *buffer,
+// find object of a given "class" in a config info message, returns a reader over its attributes
+static bool findObject(
+    Reader &msg,
     uint16_t objRequestedClass,
     uint16_t &objHandle,
-    uint16_t &objAttrCount
+    uint16_t &objAttrCount,
+    Reader &attributes
 ) {
-    auto offset = size_t(24);
-    auto count = be16r(buffer, offset);
-    be16r(buffer, offset);
+    msg.skip(24);
+    auto count = msg.u16();
+    msg.u16();
+    if(!msg.ok) {
+        return false;
+    }
     LOG_NFO("got %d object in config info response", (int)count);
-    for(int i=0; i<count; ++i) {
-        auto objClass = be16r(buffer, offset);
-        auto handle = be16r(buffer, offset);
-        auto attrCount = be16r(buffer, offset);
-        auto objSize = be16r(buffer, offset);
-        if(objRequestedClass==objClass) {
+    for(int i=0; i<count && msg.ok; ++i) {
+        auto objClass = msg.u16();
+        auto handle = msg.u16();
+        auto attrCount = msg.u16();
+        auto objSize = msg.u16();
+        auto obj = msg.sub(objSize);
+        if(msg.ok && objRequestedClass==objClass) {
             objHandle = handle;
             objAttrCount = attrCount;
-            return (offset + buffer);
+            attributes = obj;
+            return true;
         }
-        offset += objSize;
     }
-    return 0;
+    return false;
 }
 
-// find attribute of a given "class" in an object
-static const uint8_t *findAttribute(
-    const uint8_t *object,
+// find attribute of a given "class" in an object, returns a reader over its value
+static bool findAttribute(
+    Reader object,
     uint16_t attributeCount,
-    uint16_t attrRequestedClass
+    uint16_t attrRequestedClass,
+    Reader &value
 ) {
     LOG_NFO(
         "looking for attribute of class %d among %d attributes",
         (int)attrRequestedClass,
         (int)attributeCount
     );
-    auto offset = size_t(0);
-    for(int i=0; i<attributeCount; ++i) {
-        auto attrClass = be16r(object, offset);
-        auto attrSize = be16r(object, offset);
-        if(attrRequestedClass==attrClass) {
-            return (offset + object);
+    for(int i=0; i<attributeCount && object.ok; ++i) {
+        auto attrClass = object.u16();
+        auto attrSize = object.u16();
+        auto attr = object.sub(attrSize);
+        if(object.ok && attrRequestedClass==attrClass) {
+            value = attr;
+            return true;
         }
-        offset += attrSize;
     }
-    return 0;
+    return false;
 }
 
 bool parseConfigInfo(
     const uint8_t *buffer,
+    size_t len,
     uint16_t &pmStoreHandle,
     uint16_t &nbSegments
 ) {
     LOG_NFO("parsing config info response");
+    Reader msg(buffer, len);
+    Reader pmStore(buffer, 0);
     uint16_t attrCount = 0;
-    auto pmStore = findObject(buffer, kMDC_MOC_VMO_PMSTORE, pmStoreHandle, attrCount);
-    if(0==pmStore) {
+    if(!findObject(msg, kMDC_MOC_VMO_PMSTORE, pmStoreHandle, attrCount, pmStore)) {
         LOG_WRN("failed to parse config buffer for pmStore");
         return false;
     }
@@ -344,13 +402,16 @@ bool parseConfigInfo(
         (int)pmStoreHandle
     );
 
-    auto numSeg = findAttribute(pmStore, attrCount, kMDC_ATTR_NUM_SEG);
-    if(0==numSeg) {
+    Reader numSeg(buffer, 0);
+    if(!findAttribute(pmStore, attrCount, kMDC_ATTR_NUM_SEG, numSeg)) {
         LOG_WRN("failed to parse pmStore for nbSegments");
         return false;
     }
-    size_t o = 0;
-    nbSegments = be16r(numSeg, o);
+    nbSegments = numSeg.u16();
+    if(!numSeg.ok) {
+        LOG_WRN("nbSegments attribute is too short");
+        return false;
+    }
     LOG_NFO("data is split into %d segments", (int)nbSegments);
     return true;
 }
@@ -358,46 +419,73 @@ bool parseConfigInfo(
 int decodeBcd(
     uint8_t x
 ) {
-    int v = -1;
-    char buf[8];
-    sprintf(buf, "%02X", x);
-    sscanf(buf, "%d", &v);
-    return v;
+    auto hi = (x >> 4);
+    auto lo = (x & 0xF);
+    if(9<hi || 9<lo) {
+        return -1;
+    }
+    return 10*hi + lo;
 }
 
-Segment parseSegment(
-    const uint8_t *buffer
+static bool isValidDate(
+    const Sample &s
 ) {
-    Segment segment;
-    size_t o = 22;
-    segment.u0 = be32r(buffer, o);
-    segment.u1 = be32r(buffer, o);
-    segment.u2 = be16r(buffer, o);
-    segment.last = (0 != (0x40 & buffer[32]));
+    return (
+        0<=s.year &&
+        1<=s.month && s.month<=12 &&
+        1<=s.day && s.day<=31 &&
+        0<=s.hour && s.hour<=23 &&
+        0<=s.minute && s.minute<=59
+    );
+}
 
-    o = 30;
-    auto nbEntries = be16r(buffer, o);
+// segment data event: header up to byte 30, entry count at 30-31, status
+// flags at 32, entries of 12 bytes from byte 36
+static constexpr size_t kSegmentEntriesOffset = 36;
+static constexpr size_t kSegmentEntrySize = 12;
+
+bool parseSegment(
+    const uint8_t *buffer,
+    size_t len,
+    Segment &segment,
+    std::string &error
+) {
+    Reader r(buffer, len, 22);
+    segment.u0 = r.u32();
+    segment.u1 = r.u32();
+    segment.u2 = r.u16();
+    segment.last = (0 != (0x40 & r.u8()));
+    segment.samples.clear();
+    if(!r.ok || len<kSegmentEntriesOffset) {
+        error = "data segment too short (" + std::to_string(len) + " bytes)";
+        return false;
+    }
+
+    size_t nbEntries = segment.u2;
     LOG_NFO("segment has %d entries", (int)nbEntries);
-    o -= 2;
+    if(nbEntries > (len - kSegmentEntriesOffset) / kSegmentEntrySize) {
+        error = "data segment announces " + std::to_string(nbEntries) + " entries but holds " +
+            std::to_string((len - kSegmentEntriesOffset) / kSegmentEntrySize);
+        return false;
+    }
 
-    for(int i=0; i<nbEntries; ++i) {
+    for(size_t i=0; i<nbEntries; ++i) {
+        Reader e(buffer, len, kSegmentEntriesOffset + i*kSegmentEntrySize);
         Sample s;
-        auto cc = decodeBcd(buffer[ 6 + o]);
-        auto yy = decodeBcd(buffer[ 7 + o]);
-        s.year = (cc*100 + yy);
-        s.month = decodeBcd(buffer[ 8 + o]);
-        s.day = decodeBcd(buffer[ 9 + o]);
-        s.hour = decodeBcd(buffer[10 + o]);
-        s.minute = decodeBcd(buffer[11 + o]);
-
-        auto ro = (14 + o);
-        s.value = be16r(buffer, ro);
-        s.status = be16r(buffer, ro);
-        o += 12;
-
+        auto cc = decodeBcd(e.u8());
+        auto yy = decodeBcd(e.u8());
+        s.year = (cc<0 || yy<0) ? -1 : (cc*100 + yy);
+        s.month = decodeBcd(e.u8());
+        s.day = decodeBcd(e.u8());
+        s.hour = decodeBcd(e.u8());
+        s.minute = decodeBcd(e.u8());
+        e.skip(2);
+        s.value = e.u16();
+        s.status = e.u16();
+        s.validDate = isValidDate(s);
         segment.samples.push_back(s);
     }
-    return segment;
+    return true;
 }
 
 time_t sampleEpoch(
@@ -418,6 +506,19 @@ std::string sampleJson(
     const Sample &s,
     int id
 ) {
+    if(!s.validDate) {
+        char buf[160];
+        snprintf(
+            buf,
+            sizeof(buf),
+            "{ \"id\":%6d, \"epoch\":null, \"timestamp\":null, \"mg/dL\":%3d, \"status\":%d, \"error\":\"invalid date\" }",
+            id,
+            (int)s.value,
+            (int)s.status
+        );
+        return buf;
+    }
+
     int mgdl = s.value;
     const char *range = "";
     if(kValueHigh==s.value) {

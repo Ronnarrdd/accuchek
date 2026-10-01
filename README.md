@@ -14,7 +14,7 @@ Code source de `accuchek`, le programme C++ qui lit les mesures d'un Accu-Chek G
 | `session.h/.cpp` | Déroulé complet d'une lecture sur un `Transport` abstrait. Les échecs lèvent `SessionError`. |
 | `trace.h/.cpp` | Traces d'échanges USB : `RecordingTransport` (`--capture`) et `ReplayTransport` (`--replay`). |
 | `main.cpp` | Ligne de commande, détection USB (libusb), `LibusbTransport`, sortie JSON. |
-| `tests/` | Tests (`make test`) et simulateur de lecteur (`tests/sim.h`). |
+| `tests/` | Tests (`make test`), simulateur de lecteur (`tests/sim.h`), fuzzer (`tests/fuzz.cpp`). |
 
 ## Utilisation
 
@@ -37,7 +37,14 @@ Dépendances Mageia : `gcc-c++`, `make`, `lib64usb1.0-devel`. Facultatif pour le
 ```sh
 make -C services/device/accuchek-src          # binaire
 make -C services/device/accuchek-src test     # tests, lancés aussi par scripts/gate.sh
+make -C services/device/accuchek-src fuzz     # eval : 200 000 paquets mutés, 0 plantage attendu
 python3 -m evals.accuchek_replay              # eval : rejoue toutes les traces connues
 ```
 
 Les tests de session rejouent des traces produites par le simulateur (`tests/sim.h`), qui construit les paquets du lecteur avec la même disposition que le pilote Tidepool. `tests/fixtures/two_segments.trace` en est une copie versionnée ; après une modification du simulateur : `ACCUCHEK_UPDATE_FIXTURES=1 make test`.
+
+## Lecture des messages reçus
+
+Tous les décodeurs (`readInvokeId`, `parseConfigInfo`, `parseSegment`) reçoivent le nombre d'octets réellement reçus et lisent via `Reader`, qui refuse de dépasser la fin : un message tronqué ou incohérent (segment qui annonce plus de mesures qu'il n'en contient, taille d'objet au-delà de la fin) arrête la lecture avec un message clair. Une date BCD invalide ne bloque pas la lecture : la mesure sort avec `"error":"invalid date"` et Glucofi l'écarte en donnant le motif.
+
+Le fuzzer place chaque paquet muté juste avant une page mémoire protégée : lire un seul octet de trop provoque un plantage, même sans AddressSanitizer. En cas de plantage il affiche la commande pour rejouer l'itération (`FUZZ_ARGS="--seed S --from N --count 1" make fuzz`).

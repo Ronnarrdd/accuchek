@@ -166,6 +166,27 @@
     uint16_t be16r(const uint8_t *p, size_t &offset);
     uint32_t be32r(const uint8_t *p, size_t &offset);
 
+    // big endian reader that never reads past size: once a read would
+    // overflow, ok turns false and every read returns 0
+    struct Reader {
+        const uint8_t *data;
+        size_t size;
+        size_t offset;
+        bool ok;
+
+        Reader(const uint8_t *_data, size_t _size, size_t _offset = 0)
+            : data(_data), size(_size), offset(_offset), ok(_offset<=_size) {}
+
+        bool has(size_t n) const { return ok && n<=size-offset; }
+        bool skip(size_t n);
+        uint8_t u8();
+        uint16_t u16();
+        uint32_t u32();
+
+        // reader over the next n bytes, which are skipped here
+        Reader sub(size_t n);
+    };
+
     // outgoing messages, written at the start of buffer, return their size
     size_t buildAssociationResponse(uint8_t *buffer);
     size_t buildConfigReceived(uint8_t *buffer, uint16_t invokeId);
@@ -182,12 +203,16 @@
     );
     size_t buildReleaseRequest(uint8_t *buffer);
 
+    // every parser below gets the number of bytes actually received and
+    // returns false instead of reading past them
+
     // invoke id of an incoming presentation message
-    uint16_t readInvokeId(const uint8_t *buffer);
+    bool readInvokeId(const uint8_t *buffer, size_t len, uint16_t &invokeId);
 
     // find pmStore handle and number of segments in the config info message
     bool parseConfigInfo(
         const uint8_t *buffer,
+        size_t len,
         uint16_t &pmStoreHandle,
         uint16_t &nbSegments
     );
@@ -207,6 +232,7 @@
         int minute;
         uint16_t value;     // mg/dL
         uint16_t status;
+        bool validDate;     // BCD digits and calendar ranges are sane
     };
 
     // one data segment message
@@ -218,17 +244,18 @@
         std::vector<Sample> samples;
     };
 
-    // decode the device's weird-ass encoding of datetime values (BCD)
+    // decode the device's weird-ass encoding of datetime values (BCD), -1 if not BCD
     int decodeBcd(uint8_t x);
 
-    Segment parseSegment(const uint8_t *buffer);
+    bool parseSegment(const uint8_t *buffer, size_t len, Segment &segment, std::string &error);
 
     // epoch of a sample, computed from the device local time
     time_t sampleEpoch(const Sample &sample);
 
     // JSON object for one sample (no separator, no newline), every sample is
     // reported: "status" is the raw device status, off scale values get
-    // "range":"high" or "range":"low" with mg/dL set to 601 or 9
+    // "range":"high" or "range":"low" with mg/dL set to 601 or 9, samples
+    // with an invalid date get null epoch/timestamp and an "error"
     std::string sampleJson(const Sample &sample, int id);
 
     } // namespace accuchek

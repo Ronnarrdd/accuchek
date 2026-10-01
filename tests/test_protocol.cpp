@@ -5,6 +5,14 @@
 
 using namespace accuchek;
 
+static Segment segmentOf(const sim::Bytes &packet) {
+    Segment segment;
+    std::string error;
+    CHECK(parseSegment(packet.data(), packet.size(), segment, error));
+    CHECK_EQ(error, std::string(""));
+    return segment;
+}
+
 template<typename F>
 static std::string builtHex(F build) {
     auto b = sim::sentWith(build);
@@ -66,10 +74,12 @@ TEST(config_info_finds_pm_store_after_other_objects) {
     auto packet = sim::configInfo(0x0010, 0x0123, 4);
     uint16_t handle = 0;
     uint16_t nbSegments = 0;
-    CHECK(parseConfigInfo(packet.data(), handle, nbSegments));
+    CHECK(parseConfigInfo(packet.data(), packet.size(), handle, nbSegments));
     CHECK_EQ(handle, 0x0123);
     CHECK_EQ(nbSegments, 4);
-    CHECK_EQ(readInvokeId(packet.data()), 0x0010);
+    uint16_t invokeId = 0;
+    CHECK(readInvokeId(packet.data(), packet.size(), invokeId));
+    CHECK_EQ(invokeId, 0x0010);
 }
 
 TEST(config_info_without_pm_store_is_rejected) {
@@ -77,7 +87,7 @@ TEST(config_info_without_pm_store_is_rejected) {
     packet[25] = 1;     // only the first object (numeric metric) remains
     uint16_t handle = 0;
     uint16_t nbSegments = 0;
-    CHECK(!parseConfigInfo(packet.data(), handle, nbSegments));
+    CHECK(!parseConfigInfo(packet.data(), packet.size(), handle, nbSegments));
 }
 
 TEST(bcd_decoding) {
@@ -92,7 +102,7 @@ TEST(segment_samples_and_flags) {
         {2021, 3, 29, 11, 12, 133, 0},
         {2026, 12, 31, 23, 59, 409, 0x0001},
     }, true, true);
-    auto segment = parseSegment(packet.data());
+    auto segment = segmentOf(packet);
     CHECK(segment.last);
     CHECK_EQ(segment.u0, 0x00000000u);
     CHECK_EQ(segment.u1, 0x00070000u);
@@ -116,38 +126,38 @@ TEST(segment_samples_and_flags) {
 
 TEST(segment_not_last) {
     auto packet = sim::dataSegment(0x0020, 0x0100, 0, {{2024, 1, 1, 8, 0, 100, 0}}, true, false);
-    CHECK(!parseSegment(packet.data()).last);
+    CHECK(!segmentOf(packet).last);
 }
 
 TEST(epoch_in_winter_is_local_time) {
-    Sample s = {2021, 1, 15, 8, 0, 133, 0};
+    Sample s = {2021, 1, 15, 8, 0, 133, 0, true};
     CHECK_EQ((long long)sampleEpoch(s), 1610694000LL);
 }
 
 // the meter shows 07:36 on 2 July 2026: that is 05:36 UTC in Paris (CEST)
 TEST(epoch_in_summer_is_local_time) {
-    Sample s = {2026, 7, 2, 7, 36, 120, 0};
+    Sample s = {2026, 7, 2, 7, 36, 120, 0, true};
     CHECK_EQ((long long)sampleEpoch(s), 1782970560LL);
 }
 
 TEST(epoch_around_dst_changes) {
-    Sample beforeSpring = {2026, 3, 29, 1, 59, 100, 0};
-    Sample afterSpring = {2026, 3, 29, 3, 0, 100, 0};
-    Sample beforeAutumn = {2026, 10, 25, 1, 59, 100, 0};
-    Sample afterAutumn = {2026, 10, 25, 3, 0, 100, 0};
+    Sample beforeSpring = {2026, 3, 29, 1, 59, 100, 0, true};
+    Sample afterSpring = {2026, 3, 29, 3, 0, 100, 0, true};
+    Sample beforeAutumn = {2026, 10, 25, 1, 59, 100, 0, true};
+    Sample afterAutumn = {2026, 10, 25, 3, 0, 100, 0, true};
     CHECK_EQ((long long)sampleEpoch(beforeSpring), 1774745940LL);
     CHECK_EQ((long long)sampleEpoch(afterSpring), 1774746000LL);
     CHECK_EQ((long long)sampleEpoch(beforeAutumn), 1792886340LL);
     CHECK_EQ((long long)sampleEpoch(afterAutumn), 1792893600LL);
 
     // 02:30 happens twice on 25 October: either instant is acceptable
-    Sample ambiguous = {2026, 10, 25, 2, 30, 100, 0};
+    Sample ambiguous = {2026, 10, 25, 2, 30, 100, 0, true};
     auto e = (long long)sampleEpoch(ambiguous);
     CHECK(1792888200LL==e || 1792891800LL==e);
 }
 
 TEST(sample_json_format) {
-    Sample s = {2021, 1, 15, 8, 0, 133, 0};
+    Sample s = {2021, 1, 15, 8, 0, 133, 0, true};
     CHECK_EQ(
         sampleJson(s, 0),
         std::string("{ \"id\":     0, \"epoch\": 1610694000, \"timestamp\":\"2021/01/15 08:00\", \"mg/dL\":133, \"mmol/L\":  7.388889, \"status\":0 }")
@@ -155,21 +165,21 @@ TEST(sample_json_format) {
 }
 
 TEST(sample_json_high_reading) {
-    Sample s = {2021, 1, 15, 8, 0, kValueHigh, 0};
+    Sample s = {2021, 1, 15, 8, 0, kValueHigh, 0, true};
     auto json = sampleJson(s, 3);
     CHECK(std::string::npos!=json.find("\"mg/dL\":601"));
     CHECK(std::string::npos!=json.find("\"range\":\"high\""));
 }
 
 TEST(sample_json_low_reading) {
-    Sample s = {2021, 1, 15, 8, 0, kValueLow, 0x0400};
+    Sample s = {2021, 1, 15, 8, 0, kValueLow, 0x0400, true};
     auto json = sampleJson(s, 3);
     CHECK(std::string::npos!=json.find("\"mg/dL\":  9"));
     CHECK(std::string::npos!=json.find("\"status\":1024, \"range\":\"low\" }"));
 }
 
 TEST(sample_json_keeps_flagged_status) {
-    Sample s = {2021, 1, 15, 8, 0, 140, 0x0001};
+    Sample s = {2021, 1, 15, 8, 0, 140, 0x0001, true};
     auto json = sampleJson(s, 3);
     CHECK(std::string::npos!=json.find("\"mg/dL\":140"));
     CHECK(std::string::npos!=json.find("\"status\":1 }"));

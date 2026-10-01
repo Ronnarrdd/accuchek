@@ -69,6 +69,7 @@ void downloadSamples(
     uint8_t buffer[kBufferSize];
     memset(buffer, 0, sizeof(buffer));
     uint16_t invokeId = -1;
+    size_t received = 0;    // bytes of the last message received into buffer
     int phaseIndex = 1;
 
     auto fail = [&](
@@ -109,11 +110,20 @@ void downloadSamples(
         LOG_NFO("successfully read message \"%s\" from device", msgName);
         hexDumpWithHeader(msgName, buffer, bytesRead);
         ++phaseIndex;
+        received = bytesRead;
+
+        // the device may abort the association instead of answering
+        Reader r(buffer, received);
+        if(kAPDU_TYPE_ASSOCIATION_ABORT==r.u16() && r.ok) {
+            fail(std::string("received association abort request instead of ") + msgName);
+        }
         return bytesRead;
     };
 
     auto updateInvokeId = [&]() {
-        invokeId = readInvokeId(buffer);
+        if(!readInvokeId(buffer, received, invokeId)) {
+            fail("message too short to hold an invoke id (" + std::to_string(received) + " bytes)");
+        }
         LOG_NFO("invokeId after phase %d is: %d", phaseIndex, (int)invokeId);
     };
 
@@ -141,7 +151,7 @@ void downloadSamples(
 
     uint16_t pmStoreHandle = 0;
     uint16_t nbSegments = 0;
-    if(false==parseConfigInfo(buffer, pmStoreHandle, nbSegments)) {
+    if(false==parseConfigInfo(buffer, received, pmStoreHandle, nbSegments)) {
         fail("failed to parse config info");
     }
 
@@ -154,12 +164,6 @@ void downloadSamples(
     // protocol step: read MDS attr answer
     receive("MDS attribute answer");
     updateInvokeId();
-    {
-        size_t o = 0;
-        if(kAPDU_TYPE_ASSOCIATION_ABORT==be16r(buffer, o)) {
-            fail("received association abort request");
-        }
-    }
 
     // protocol step: send action request
     send("action request", buildSegmentInfoRequest(buffer, invokeId, pmStoreHandle));
@@ -205,7 +209,11 @@ void downloadSamples(
         receive("data segment");
         updateInvokeId();
 
-        auto segment = parseSegment(buffer);
+        Segment segment;
+        std::string error;
+        if(!parseSegment(buffer, received, segment, error)) {
+            fail(error);
+        }
         for(const auto &s : segment.samples) {
             LOG_NFO(
                 "sample: %04d/%02d/%02d %02d:%02d => (mg/dL=%2d, mmol/L=%7.3f, status=0x%02x)",
