@@ -192,6 +192,12 @@
         uint16_t &nbSegments
     );
 
+    // values the device stores instead of a number when the reading is off scale
+    static constexpr uint16_t kValueHigh = 0x07FE;     // "HI": above the meter range
+    static constexpr uint16_t kValueLow = 0x0802;      // "LO": below the meter range
+    static constexpr int kReportedHigh = 601;           // tidepool convention: just above 600 mg/dL
+    static constexpr int kReportedLow = 9;              // tidepool convention: just below 10 mg/dL
+
     // one blood glucose sample as stored by the device
     struct Sample {
         int year;
@@ -220,7 +226,9 @@
     // epoch of a sample, computed from the device local time
     time_t sampleEpoch(const Sample &sample);
 
-    // JSON object for one sample (no separator, no newline)
+    // JSON object for one sample (no separator, no newline), every sample is
+    // reported: "status" is the raw device status, off scale values get
+    // "range":"high" or "range":"low" with mg/dL set to 601 or 9
     std::string sampleJson(const Sample &sample, int id);
 
     } // namespace accuchek

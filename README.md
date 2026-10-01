@@ -26,6 +26,10 @@ accuchek --replay lecture.trace > mesures.json   # rejoue une trace, sans lecteu
 
 Une trace contient les mesures du lecteur : ce sont des données de santé, à garder hors du dépôt (`~/.local/share/glucofi/traces/`). Le hook pre-commit refuse les `*.trace` hors de `tests/fixtures/`.
 
+## Sortie
+
+Un tableau JSON, une mesure par objet : `id`, `epoch`, `timestamp` (heure du lecteur), `mg/dL`, `mmol/L`, `status` (statut brut du lecteur). Toutes les mesures du lecteur sont écrites, quel que soit leur statut. Les lectures hors échelle (valeurs spéciales `0x07FE` et `0x0802`, comme dans le pilote Tidepool) ont `"range":"high"` avec 601 mg/dL ou `"range":"low"` avec 9 mg/dL. Contrat : `contracts/accuchek_output.schema.json`.
+
 ## Compiler et tester
 
 Dépendances Mageia : `gcc-c++`, `make`, `lib64usb1.0-devel`. Facultatif pour les tests : `libasan-devel` et `libubsan-devel` (activés automatiquement s'ils sont installés).

@@ -35,7 +35,7 @@
         explicit SessionError(const std::string &msg) : std::runtime_error(msg) {}
     };
 
-    // run the whole protocol, call onSample for every sample worth reporting
+    // run the whole protocol, call onSample for every sample, whatever its status
     void downloadSamples(
         Transport &transport,
         const std::function<void(const Sample &)> &onSample

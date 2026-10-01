@@ -150,8 +150,30 @@ TEST(sample_json_format) {
     Sample s = {2021, 1, 15, 8, 0, 133, 0};
     CHECK_EQ(
         sampleJson(s, 0),
-        std::string("{ \"id\":     0, \"epoch\": 1610694000, \"timestamp\":\"2021/01/15 08:00\", \"mg/dL\":133, \"mmol/L\":  7.388889 }")
+        std::string("{ \"id\":     0, \"epoch\": 1610694000, \"timestamp\":\"2021/01/15 08:00\", \"mg/dL\":133, \"mmol/L\":  7.388889, \"status\":0 }")
     );
+}
+
+TEST(sample_json_high_reading) {
+    Sample s = {2021, 1, 15, 8, 0, kValueHigh, 0};
+    auto json = sampleJson(s, 3);
+    CHECK(std::string::npos!=json.find("\"mg/dL\":601"));
+    CHECK(std::string::npos!=json.find("\"range\":\"high\""));
+}
+
+TEST(sample_json_low_reading) {
+    Sample s = {2021, 1, 15, 8, 0, kValueLow, 0x0400};
+    auto json = sampleJson(s, 3);
+    CHECK(std::string::npos!=json.find("\"mg/dL\":  9"));
+    CHECK(std::string::npos!=json.find("\"status\":1024, \"range\":\"low\" }"));
+}
+
+TEST(sample_json_keeps_flagged_status) {
+    Sample s = {2021, 1, 15, 8, 0, 140, 0x0001};
+    auto json = sampleJson(s, 3);
+    CHECK(std::string::npos!=json.find("\"mg/dL\":140"));
+    CHECK(std::string::npos!=json.find("\"status\":1 }"));
+    CHECK(std::string::npos==json.find("range"));
 }
 
 TEST(config_file_parsing) {

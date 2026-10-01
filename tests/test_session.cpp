@@ -120,6 +120,24 @@ TEST(session_truncated_trace) {
 
 // checked-in copy of the simulated session, replayed by evals/accuchek_replay.py
 // regenerate with: ACCUCHEK_UPDATE_FIXTURES=1 make test
+// off scale readings and a reading with a non zero status
+static const std::vector<std::vector<sim::Record>> kFlags = {
+    {
+        {2026, 9, 1, 8, 0, 120, 0},
+        {2026, 9, 1, 12, 0, kValueHigh, 0},
+        {2026, 9, 2, 3, 15, kValueLow, 0},
+        {2026, 9, 2, 8, 0, 140, 0x0001},
+    },
+};
+
+TEST(session_reports_every_sample_whatever_its_status) {
+    auto samples = download(sim::sessionTrace(kFlags));
+    CHECK_EQ(samples.size(), 4u);
+    CHECK_EQ(samples[1].value, kValueHigh);
+    CHECK_EQ(samples[2].value, kValueLow);
+    CHECK_EQ(samples[3].status, 1);
+}
+
 static const std::vector<std::vector<sim::Record>> kSummerAndDst = {
     {
         {2026, 3, 29, 1, 59, 101, 0},
@@ -151,6 +169,7 @@ static void checkFixture(
 TEST(fixture_traces_match_simulator) {
     checkFixture("tests/fixtures/two_segments.trace", sim::sessionTrace(kTwoSegments));
     checkFixture("tests/fixtures/summer_and_dst.trace", sim::sessionTrace(kSummerAndDst));
+    checkFixture("tests/fixtures/flags.trace", sim::sessionTrace(kFlags));
 }
 
 // command line: run the real binary on a trace
@@ -197,6 +216,14 @@ TEST(cli_outputs_json_array) {
     CHECK_EQ(r.out.substr(r.out.size() - 3), std::string("\n]\n"));
     CHECK(std::string::npos!=r.out.find("\"timestamp\":\"2021/01/16 07:45\", \"mg/dL\": 98"));
     CHECK(std::string::npos!=r.out.find("\"id\":     2"));
+}
+
+TEST(cli_outputs_flagged_samples) {
+    auto r = runCli(sim::sessionTrace(kFlags));
+    CHECK_EQ(r.code, 0);
+    CHECK(std::string::npos!=r.out.find("\"mg/dL\":601, \"mmol/L\": 33.388889, \"status\":0, \"range\":\"high\""));
+    CHECK(std::string::npos!=r.out.find("\"range\":\"low\""));
+    CHECK(std::string::npos!=r.out.find("\"mg/dL\":140, \"mmol/L\":  7.777778, \"status\":1 }"));
 }
 
 TEST(cli_fails_on_broken_session) {

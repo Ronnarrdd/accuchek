@@ -218,9 +218,7 @@ void downloadSamples(
                 (s.value / 18.0),
                 (int)s.status
             );
-            if(0==s.status) {
-                onSample(s);
-            }
+            onSample(s);
         }
 
         // send "data received" ack

@@ -418,11 +418,21 @@ std::string sampleJson(
     const Sample &s,
     int id
 ) {
-    char buf[256];
+    int mgdl = s.value;
+    const char *range = "";
+    if(kValueHigh==s.value) {
+        mgdl = kReportedHigh;
+        range = ", \"range\":\"high\"";
+    } else if(kValueLow==s.value) {
+        mgdl = kReportedLow;
+        range = ", \"range\":\"low\"";
+    }
+
+    char buf[320];
     snprintf(
         buf,
         sizeof(buf),
-        "{ \"id\":%6d, \"epoch\":%11" PRIu64 ", \"timestamp\":\"%04d/%02d/%02d %02d:%02d\", \"mg/dL\":%3d, \"mmol/L\":%10.6f }",
+        "{ \"id\":%6d, \"epoch\":%11" PRIu64 ", \"timestamp\":\"%04d/%02d/%02d %02d:%02d\", \"mg/dL\":%3d, \"mmol/L\":%10.6f, \"status\":%d%s }",
         id,
         (uint64_t)sampleEpoch(s),
         s.year,
@@ -430,8 +440,10 @@ std::string sampleJson(
         s.day,
         s.hour,
         s.minute,
-        (int)s.value,
-        (s.value / 18.0)
+        mgdl,
+        (mgdl / 18.0),
+        (int)s.status,
+        range
     );
     return buf;
 }
