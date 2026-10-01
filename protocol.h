@@ -155,10 +155,21 @@
     // get the name of a specific MDC_* constant as a string
     const char *findKeyByValue(uint16_t value);
 
-    // config key value pair map (see config.txt)
+    // config key value pair map: "vendor_0xVVVV_device_0xPPPP 1" enables a
+    // device, "... 0" disables it (see config.txt)
     using Config = std::unordered_map<std::string, std::string>;
     Config parseConfig(const std::string &text);
+
+    // devices known to work, enabled without any config file
+    Config defaultConfig();
+
+    // defaultConfig() with the entries of a config file on top
+    Config configWithFile(const std::string &text);
+
     bool isDeviceAllowed(const Config &config, uint16_t vendorId, uint16_t productId);
+
+    // "173a:21d5" for every enabled device, sorted
+    std::vector<std::string> allowedDevices(const Config &config);
 
     // big endian helpers, writers shift ptr, readers shift offset
     void be16(uint8_t *&p, uint16_t v);

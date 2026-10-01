@@ -198,6 +198,33 @@ TEST(config_file_parsing) {
     CHECK(!isDeviceAllowed(config, 0x173a, 0x21d8));
 }
 
+TEST(config_last_line_without_newline) {
+    auto config = parseConfig("vendor_0x173a_device_0x21d5 1");
+    CHECK(isDeviceAllowed(config, 0x173a, 0x21d5));
+}
+
+// accuchek used to read ./config.txt and ignore every meter without it
+TEST(known_devices_need_no_config_file) {
+    auto config = defaultConfig();
+    CHECK(isDeviceAllowed(config, 0x173a, 0x21d5));
+    CHECK(isDeviceAllowed(config, 0x173a, 0x21d7));
+    CHECK(isDeviceAllowed(config, 0x173a, 0x21d8));
+    CHECK(!isDeviceAllowed(config, 0x173a, 0x1234));
+    CHECK(!isDeviceAllowed(config, 0x046d, 0x21d5));
+}
+
+TEST(config_file_adds_and_disables_devices) {
+    auto config = configWithFile(
+        "vendor_0x173a_device_0x21d7 0\n"
+        "vendor_0x173a_device_0x2222 1\n"
+    );
+    auto devices = allowedDevices(config);
+    CHECK_EQ(devices.size(), 3u);
+    CHECK_EQ(devices[0], std::string("173a:21d5"));
+    CHECK_EQ(devices[1], std::string("173a:21d8"));
+    CHECK_EQ(devices[2], std::string("173a:2222"));
+}
+
 TEST(replay_trace_parsing) {
     ReplayTransport t("# comment\nc 0000\n< E2 00\n> !-7\n");
     CHECK_EQ(t.lines.size(), 3u);

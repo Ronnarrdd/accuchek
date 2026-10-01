@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
+#include <algorithm>
 
 namespace accuchek {
 
@@ -25,14 +26,14 @@ Config parseConfig(
 
         auto nl = text.find('\n', start);
         auto stop = (std::string::npos==nl ? text.size() : (1 + nl));
-        auto line = text.data() + start;
-        auto end = text.data() + stop;
+        auto line = std::string(text, start, stop - start) + '\n';    // last line may lack its newline
         start = stop;
+        const char *end = line.data() + line.size();
 
         const char *firstSep = 0;
         const char *secondSep = 0;
         const char *secondFirst = 0;
-        for(auto p = line; p<end; ++p) {
+        for(const char *p = line.data(); p<end; ++p) {
             auto c = p[0];
             auto validChar = (
                 ('0'<=c && c<='9')  ||
@@ -59,9 +60,45 @@ Config parseConfig(
         if(0==firstSep || 0==secondFirst || 0==secondSep) {
             continue;
         }
-        config[std::string(line, firstSep)] = std::string(secondFirst, secondSep);
+        config[std::string((const char *)line.data(), firstSep)] = std::string(secondFirst, secondSep);
     }
     return config;
+}
+
+Config defaultConfig() {
+    return {
+        {"vendor_0x173a_device_0x21d5", "1"},   // roche accu-chek guide, model 929
+        {"vendor_0x173a_device_0x21d7", "1"},   // similar model, same protocol
+        {"vendor_0x173a_device_0x21d8", "1"},   // roche relion platinum, model 982
+    };
+}
+
+Config configWithFile(
+    const std::string &text
+) {
+    auto config = defaultConfig();
+    for(const auto &kv : parseConfig(text)) {
+        config[kv.first] = kv.second;
+    }
+    return config;
+}
+
+std::vector<std::string> allowedDevices(
+    const Config &config
+) {
+    std::vector<std::string> devices;
+    for(const auto &kv : config) {
+        unsigned vendorId = 0;
+        unsigned productId = 0;
+        if(2==sscanf(kv.first.c_str(), "vendor_0x%4x_device_0x%4x", &vendorId, &productId) &&
+                isDeviceAllowed(config, vendorId, productId)) {
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%04x:%04x", vendorId, productId);
+            devices.push_back(buf);
+        }
+    }
+    std::sort(devices.begin(), devices.end());
+    return devices;
 }
 
 bool isDeviceAllowed(

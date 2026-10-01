@@ -2,7 +2,8 @@
 
      download samples from a Roche accuchek device using libusb
 
-     usage: accuchek [DEVICE_INDEX] [--capture TRACE] [--replay TRACE]
+     usage: accuchek [DEVICE_INDEX] [--config FILE] [--capture TRACE] [--replay TRACE]
+            accuchek [--config FILE] --known-devices
 
      compile with: make
 
@@ -26,17 +27,21 @@
 using namespace accuchek;
 
 // globals
-static Config g_config;
+static Config g_config = defaultConfig();
 static FILE *g_output = 0;
 static auto g_lineCount = 0;
 static auto g_firstLine = true;
 
-// load config file
-static void loadConfig() {
+// add a config file to the built-in device list
+static void loadConfig(
+    const char *path
+) {
     std::string text;
-    if(readFile("config.txt", text)) {
-        g_config = parseConfig(text);
+    if(false==readFile(path, text)) {
+        fprintf(stderr, "accuchek: cannot read config file %s\n", path);
+        exit(1);
     }
+    g_config = configWithFile(text);
 }
 
 // a usb device (only things about the device we actually need)
@@ -615,8 +620,14 @@ int main(
     int deviceIndex = -1;
     const char *capturePath = 0;
     const char *replayPath = 0;
+    const char *configPath = 0;
+    bool listDevices = false;
     for(int i=1; i<argc; ++i) {
-        if(0==strcmp(argv[i], "--capture") && i+1<argc) {
+        if(0==strcmp(argv[i], "--config") && i+1<argc) {
+            configPath = argv[++i];
+        } else if(0==strcmp(argv[i], "--known-devices")) {
+            listDevices = true;
+        } else if(0==strcmp(argv[i], "--capture") && i+1<argc) {
             capturePath = argv[++i];
         } else if(0==strcmp(argv[i], "--replay") && i+1<argc) {
             replayPath = argv[++i];
@@ -625,14 +636,21 @@ int main(
         }
     }
 
+    if(0!=configPath) {
+        loadConfig(configPath);
+    }
+    if(listDevices) {
+        for(const auto &device : allowedDevices(g_config)) {
+            printf("%s\n", device.c_str());
+        }
+        return 0;
+    }
+
     // must be root
     if(0==replayPath) {
         auto euid = geteuid();
         LOG_FTL(0!=euid, "must be root, euid is %d, bailing", euid);
     }
-
-    // load config file
-    loadConfig();
 
     // be silent unless asked to talk
     if(0!=getenv("ACCUCHEK_DBG")) {

@@ -179,19 +179,19 @@ struct CliResult {
     std::string out;
 };
 
-static CliResult runCli(
-    const std::string &trace,
-    const std::string &args = ""
+// run the binary with args from directory cwd (default: a fresh empty one)
+static CliResult runBinary(
+    const std::string &args,
+    const std::string &cwd = ""
 ) {
-    char path[] = "/tmp/accuchek-test-XXXXXX";
-    auto fd = mkstemp(path);
-    CHECK(0<=fd);
-    CHECK_EQ(write(fd, trace.data(), trace.size()), (ssize_t)trace.size());
-    close(fd);
-
+    std::string dir = cwd;
+    char tmpdir[] = "/tmp/accuchek-cwd-XXXXXX";
+    if(dir.empty()) {
+        CHECK(0!=mkdtemp(tmpdir));
+        dir = tmpdir;
+    }
     auto bin = getenv("ACCUCHEK_BIN");
-    auto cmd = std::string("env -u ACCUCHEK_DBG ") + (bin ? bin : "./accuchek") +
-        " --replay " + path + " " + args + " 2>/dev/null";
+    auto cmd = "cd '" + dir + "' && env -u ACCUCHEK_DBG " + (bin ? bin : "./accuchek") + " " + args + " 2>/dev/null";
     auto pipe = popen(cmd.c_str(), "r");
     CliResult result = {-1, ""};
     char chunk[4096];
@@ -201,8 +201,58 @@ static CliResult runCli(
     }
     auto status = pclose(pipe);
     result.code = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
-    unlink(path);
+    if(cwd.empty()) {
+        rmdir(tmpdir);
+    }
     return result;
+}
+
+static std::string writeTemp(
+    const std::string &text
+) {
+    char path[] = "/tmp/accuchek-test-XXXXXX";
+    auto fd = mkstemp(path);
+    CHECK(0<=fd);
+    CHECK_EQ(write(fd, text.data(), text.size()), (ssize_t)text.size());
+    close(fd);
+    return path;
+}
+
+static CliResult runCli(
+    const std::string &trace,
+    const std::string &args = ""
+) {
+    auto path = writeTemp(trace);
+    auto result = runBinary("--replay " + path + " " + args);
+    unlink(path.c_str());
+    return result;
+}
+
+TEST(cli_known_devices_without_config_file) {
+    auto r = runBinary("--known-devices");
+    CHECK_EQ(r.code, 0);
+    CHECK_EQ(r.out, std::string("173a:21d5\n173a:21d7\n173a:21d8\n"));
+}
+
+TEST(cli_ignores_config_txt_in_current_directory) {
+    char dir[] = "/tmp/accuchek-cwd-XXXXXX";
+    CHECK(0!=mkdtemp(dir));
+    auto cfg = std::string(dir) + "/config.txt";
+    auto fp = fopen(cfg.c_str(), "w");
+    fputs("vendor_0x173a_device_0x21d5 0\n", fp);
+    fclose(fp);
+    auto r = runBinary("--known-devices", dir);
+    CHECK_EQ(r.out, std::string("173a:21d5\n173a:21d7\n173a:21d8\n"));
+    auto withFile = runBinary("--config config.txt --known-devices", dir);
+    CHECK_EQ(withFile.out, std::string("173a:21d7\n173a:21d8\n"));
+    unlink(cfg.c_str());
+    rmdir(dir);
+}
+
+TEST(cli_missing_config_file_is_an_error) {
+    auto r = runBinary("--config /nonexistent/config.txt --known-devices");
+    CHECK(0!=r.code);
+    CHECK_EQ(r.out, std::string(""));
 }
 
 TEST(cli_outputs_json_array) {

@@ -22,7 +22,10 @@ Code source de `accuchek`, le programme C++ qui lit les mesures d'un Accu-Chek G
 accuchek [NUMERO_LECTEUR] > mesures.json      # lecteur branché
 accuchek --capture lecture.trace > mesures.json  # idem, en enregistrant les échanges USB
 accuchek --replay lecture.trace > mesures.json   # rejoue une trace, sans lecteur ni root
+accuchek --known-devices                         # lecteurs acceptés (vendor:product)
 ```
+
+Les lecteurs acceptés sont intégrés au programme (`defaultConfig()` : `173a:21d5` Accu-Chek Guide, `173a:21d7`, `173a:21d8` Relion Platinum). Aucun fichier n'est lu dans le dossier courant. Pour essayer un autre modèle ou en désactiver un : `accuchek --config fichier.txt`, au format de `config.example.txt` (`vendor_0x173a_device_0x21d7 0` désactive).
 
 Une trace contient les mesures du lecteur : ce sont des données de santé, à garder hors du dépôt (`~/.local/share/glucofi/traces/`). Le hook pre-commit refuse les `*.trace` hors de `tests/fixtures/`.
 
