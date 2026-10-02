@@ -41,6 +41,7 @@ accuchek: .objs/main.o $(LIB_SRCS:%.cpp=.objs/%.o)
 	@$(CXX) $(TEST_CFLAGS) -o $@ $^ $(LIBS)
 
 test: accuchek .objs/test/run_tests
+	@[ -n "$(SANITIZE)" ] || echo "warning: tests built WITHOUT ASan/UBSan (install libasan and libubsan development packages)" >&2
 	@ACCUCHEK_BIN="$(CURDIR)/accuchek" .objs/test/run_tests
 
 # periodic eval: mutated packets against guard pages, FUZZ_ARGS="--seed N --count N"

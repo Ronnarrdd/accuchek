@@ -405,6 +405,17 @@ TEST(session_truncated_trace) {
     CHECK(!sessionError(cut).empty());
 }
 
+// a zero-length packet used to reach memcpy / memcmp with a null pointer (UBSan)
+TEST(replay_empty_packets) {
+    ReplayTransport replay("c\n<\n>\n");
+    uint8_t buffer[4] = {1, 2, 3, 4};
+    CHECK_EQ(replay.controlStatus(buffer, sizeof(buffer)), 0);
+    CHECK_EQ(replay.bulkIn(buffer, sizeof(buffer)), 0);
+    CHECK_EQ(replay.bulkOut(buffer, 0), 0);
+    CHECK(replay.finished());
+    CHECK_EQ(buffer[0], 1);
+}
+
 // checked-in copy of the simulated session, also validated against
 // schema/output.schema.json by tests/check_schema.py; regenerate with: ACCUCHEK_UPDATE_FIXTURES=1 make test
 // off scale readings and a reading with a non zero status

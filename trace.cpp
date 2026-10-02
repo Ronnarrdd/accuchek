@@ -133,7 +133,7 @@ int ReplayTransport::controlStatus(
     if(0==l) return kReplayMismatch;
     if(l->error) return l->error;
     auto n = std::min(len, l->bytes.size());
-    memcpy(buffer, l->bytes.data(), n);
+    std::copy_n(l->bytes.begin(), n, buffer);
     return (int)n;
 }
 
@@ -144,8 +144,9 @@ int ReplayTransport::bulkIn(
     auto l = take('<');
     if(0==l) return finished() ? kReplayExhausted : kReplayMismatch;
     if(l->error) return l->error;
+    // an empty line has a null data(), and memcpy(dst, nullptr, 0) is undefined
     auto n = std::min(maxLen, l->bytes.size());
-    memcpy(buffer, l->bytes.data(), n);
+    std::copy_n(l->bytes.begin(), n, buffer);
     return (int)n;
 }
 
@@ -156,7 +157,7 @@ int ReplayTransport::bulkOut(
     auto l = take('>');
     if(0==l) return kReplayMismatch;
     if(l->error) return l->error;
-    if(l->bytes.size()!=len || 0!=memcmp(l->bytes.data(), buffer, len)) {
+    if(l->bytes.size()!=len || !std::equal(l->bytes.begin(), l->bytes.end(), buffer)) {
         lastError = "sent " + toHex(buffer, len) + ", trace expects " + toHex(l->bytes.data(), l->bytes.size());
         return kReplayMismatch;
     }
