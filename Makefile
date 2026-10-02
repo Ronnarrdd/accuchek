@@ -1,9 +1,12 @@
-.PHONY: all clean test fuzz
+.PHONY: all clean test fuzz schema-check install uninstall
 SHELL = /bin/bash
 CXX = g++ -std=c++17
 LIBS = -lusb-1.0 -lm
-#CFLAGS = -O0 -g3 -march=native
-CFLAGS = -g0 -O3 -march=native -fomit-frame-pointer -DNDEBUG
+# portable by default; for a binary tuned to this machine: make OPTFLAGS="-O3 -march=native"
+OPTFLAGS ?= -O2
+CFLAGS = -g0 $(OPTFLAGS) -fomit-frame-pointer -DNDEBUG
+PREFIX ?= /usr/local
+UDEVDIR ?= /etc/udev/rules.d
 # sanitizers when installed (libasan-devel, libubsan-devel)
 SANITIZE := $(shell echo 'int main(){}' | $(CXX) -x c++ -fsanitize=address,undefined - -o /dev/null 2>/dev/null \
     && echo -fsanitize=address,undefined -fno-sanitize-recover=all)
@@ -47,6 +50,18 @@ test: accuchek .objs/test/run_tests
 
 fuzz: .objs/test/fuzz
 	@.objs/test/fuzz $(FUZZ_ARGS)
+
+# replay every fixture and validate the JSON against the schema (pip install jsonschema)
+schema-check: accuchek
+	@ACCUCHEK_BIN="$(CURDIR)/accuchek" python3 tests/check_schema.py
+
+# reload udev afterwards: udevadm control --reload && udevadm trigger --subsystem-match=usb
+install: accuchek
+	install -D -m 755 accuchek $(DESTDIR)$(PREFIX)/bin/accuchek
+	install -D -m 644 udev/70-accuchek.rules $(DESTDIR)$(UDEVDIR)/70-accuchek.rules
+
+uninstall:
+	rm -f $(DESTDIR)$(PREFIX)/bin/accuchek $(DESTDIR)$(UDEVDIR)/70-accuchek.rules
 
 clean:
 	rm -r -f accuchek

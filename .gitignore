@@ -1,32 +1,21 @@
-# Prerequisites
+# build outputs
+/accuchek
+/.objs/
+/.deps/
+*.o
 *.d
 
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
+# health data: readings and USB traces of a real meter never go in the repo
+*.trace
+!/tests/fixtures/*.trace
+/*.json
+mesures*.json
+readings*.json
 
-# Precompiled Headers
-*.gch
-*.pch
+# local configuration
+/config.txt
 
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
+# tooling
+__pycache__/
+*.pyc
+.venv/

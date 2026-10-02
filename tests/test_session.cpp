@@ -3,6 +3,7 @@
 #include <session.h>
 #include <trace.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
 
@@ -404,8 +405,8 @@ TEST(session_truncated_trace) {
     CHECK(!sessionError(cut).empty());
 }
 
-// checked-in copy of the simulated session, replayed by evals/accuchek_replay.py
-// regenerate with: ACCUCHEK_UPDATE_FIXTURES=1 make test
+// checked-in copy of the simulated session, also validated against
+// schema/output.schema.json by tests/check_schema.py; regenerate with: ACCUCHEK_UPDATE_FIXTURES=1 make test
 // off scale readings and a reading with a non zero status
 static const std::vector<std::vector<sim::Record>> kFlags = {
     {
@@ -692,6 +693,43 @@ TEST(cli_unreadable_trace_is_a_usage_error) {
 TEST(cli_unknown_option_is_a_usage_error) {
     auto r = runBinary("--bogus");
     CHECK_EQ(r.code, kExitUsage);
+    CHECK_EQ(r.err, std::string("accuchek: unknown or incomplete option --bogus (see accuchek --help)\n"));
+}
+
+TEST(cli_help_and_version) {
+    for(const char *flag : {"--help", "-h"}) {
+        auto r = runBinary(flag);
+        CHECK_EQ(r.code, kExitOk);
+        CHECK(0==r.out.find("usage: accuchek "));
+        CHECK(std::string::npos!=r.out.find("--known-devices"));
+        CHECK_EQ(r.err, std::string(""));
+    }
+    auto v = runBinary("--version");
+    CHECK_EQ(v.code, kExitOk);
+    CHECK(0==v.out.find("accuchek "));
+    CHECK_EQ(v.out.back(), '\n');
+}
+
+// the udev rule must grant access to exactly the meters accuchek accepts
+TEST(udev_rule_matches_known_devices) {
+    std::string rule;
+    CHECK(readFile("udev/70-accuchek.rules", rule));
+    std::string ids;
+    for(const char *key : {"ATTR{idVendor}==\"", "ATTR{idProduct}==\""}) {
+        auto at = rule.find(key);
+        CHECK(std::string::npos!=at);
+        at += strlen(key);
+        ids += rule.substr(at, rule.find('"', at) - at) + "\n";
+    }
+    std::string expected;
+    std::string products;
+    auto known = runBinary("--known-devices").out;
+    for(size_t at=0; at<known.size(); at=known.find('\n', at) + 1) {
+        products += (products.empty() ? "" : "|") + known.substr(at + 5, 4);
+        CHECK_EQ(known.substr(at, 5), std::string("173a:"));
+    }
+    CHECK_EQ(ids, "173a\n" + products + "\n");
+    CHECK(std::string::npos!=rule.find("TAG+=\"uaccess\""));
 }
 
 // ACCUCHEK_DBG used to send logs and hexdumps to stdout, inside the JSON

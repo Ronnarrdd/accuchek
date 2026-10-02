@@ -405,7 +405,7 @@
     }
 
     // trace of a complete session; replay it with replayArgs(s), which the
-    // trace also records in its "# args:" comment for the Python evals
+    // trace also records in its "# args:" comment for external replay tools
     inline std::string sessionTrace(const Session &s) {
         auto handle = s.pmStoreHandle;
         auto args = replayArgs(s);

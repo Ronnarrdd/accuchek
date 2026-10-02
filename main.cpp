@@ -2,15 +2,13 @@
 
      download samples from a Roche accuchek device using libusb
 
-     usage: accuchek [DEVICE_INDEX] [--config FILE] [--set-time] [--capture TRACE]
-            accuchek --replay TRACE [--set-time --now "YYYY/MM/DD HH:MM:SS"]
-            accuchek [--config FILE] --known-devices
+     usage: see kUsage below, or run accuchek --help
 
      --set-time  set the meter clock to the PC clock when they differ by more
                  than kClockToleranceS and the PC clock is NTP synchronized
      --now       PC clock to assume while replaying, taken as synchronized
 
-     stdout: a JSON object (format 2, see contracts/accuchek_output.schema.json),
+     stdout: a JSON object (format 2, see schema/output.schema.json),
              written only once the download succeeded
      stderr: "accuchek: <reason>" on failure, logs when ACCUCHEK_DBG is set
      exit codes: see ExitCode in session.h
@@ -721,6 +719,31 @@ static void replayTrace(
     runSession(*replay);
 }
 
+#ifndef ACCUCHEK_VERSION
+#define ACCUCHEK_VERSION "2.0.0"
+#endif
+
+static const char kUsage[] =
+    "usage: accuchek [DEVICE_INDEX] [--config FILE] [--set-time] [--capture TRACE]\n"
+    "       accuchek --replay TRACE [--set-time --now \"YYYY/MM/DD HH:MM:SS\"]\n"
+    "       accuchek [--config FILE] --known-devices\n"
+    "       accuchek --help | --version\n"
+    "\n"
+    "Download every reading from a Roche Accu-Chek meter over USB and print\n"
+    "them as one JSON object on stdout.\n"
+    "\n"
+    "  DEVICE_INDEX      read the Nth known meter on the bus (default: the first)\n"
+    "  --set-time        set the meter clock to the PC clock if they differ by\n"
+    "                    more than 60 s and the PC clock is NTP synchronized\n"
+    "  --capture TRACE   also record the USB exchange to TRACE (health data!)\n"
+    "  --replay TRACE    replay a recorded exchange instead of talking to a meter\n"
+    "  --now TIME        PC clock to assume while replaying\n"
+    "  --config FILE     add or disable meter models (see config.example.txt)\n"
+    "  --known-devices   list accepted meters as vendor:product\n"
+    "\n"
+    "Exit codes: 0 ok, 1 usage, 2 no meter, 3 access denied (udev rule missing),\n"
+    "4 USB transfer failed, 5 protocol error. Set ACCUCHEK_DBG=1 for logs on stderr.\n";
+
 // everything but the final JSON output, throws Fatal on failure
 static void run(
     int argc,
@@ -735,7 +758,13 @@ static void run(
     const char *nowText = 0;
     bool listDevices = false;
     for(int i=1; i<argc; ++i) {
-        if(0==strcmp(argv[i], "--config") && i+1<argc) {
+        if(0==strcmp(argv[i], "--help") || 0==strcmp(argv[i], "-h")) {
+            fputs(kUsage, stdout);
+            exit(kExitOk);
+        } else if(0==strcmp(argv[i], "--version")) {
+            printf("accuchek %s\n", ACCUCHEK_VERSION);
+            exit(kExitOk);
+        } else if(0==strcmp(argv[i], "--config") && i+1<argc) {
             configPath = argv[++i];
         } else if(0==strcmp(argv[i], "--set-time")) {
             g_options.setTime = true;
@@ -750,7 +779,7 @@ static void run(
         } else if('-'!=argv[i][0]) {
             deviceIndex = atoi(argv[i]);
         } else {
-            die(kExitUsage, "unknown or incomplete option %s", argv[i]);
+            die(kExitUsage, "unknown or incomplete option %s (see accuchek --help)", argv[i]);
         }
     }
 

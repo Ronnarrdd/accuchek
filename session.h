@@ -34,7 +34,7 @@
         virtual void note(const std::string &) {}
     };
 
-    // process exit codes, mirrored by contracts.AccuchekExit on the Glucofi side
+    // process exit codes, part of the public interface: callers branch on them
     enum ExitCode {
         kExitOk = 0,            // all samples written (none if the meter is empty)
         kExitUsage = 1,         // bad arguments, unreadable config, trace or capture file
