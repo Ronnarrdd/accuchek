@@ -19,6 +19,14 @@ void checkFailed(
 ) {
     ++gFailures;
     fprintf(stderr, "%s:%d: %s\n", file, line, what.c_str());
+    // GitHub Actions annotation, readable on the run page without the logs
+    if(getenv("GITHUB_ACTIONS")) {
+        std::string oneLine = what;
+        for(auto &c : oneLine) {
+            if('\n'==c || '\r'==c) c = ' ';
+        }
+        printf("::error file=%s,line=%d::%s\n", file, line, oneLine.c_str());
+    }
 }
 
 // usage: run_tests [NAME_SUBSTRING]

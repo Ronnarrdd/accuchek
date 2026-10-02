@@ -8,9 +8,12 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Dependencies
         run: |
           sudo apt-get update
@@ -18,7 +21,11 @@ jobs:
       - name: Build
         run: make
       - name: Tests (sanitizers)
-        run: make test
+        run: |
+          make test 2>&1 | tee test.log || {
+            grep -E 'FAIL |Sanitizer|runtime error|Error [0-9]' test.log | head -20 | sed 's/^/::error::/'
+            exit 1
+          }
       - name: Output schema
         run: make schema-check
       - name: Fuzz
