@@ -760,6 +760,19 @@ TEST(cli_empty_meter_outputs_no_readings) {
     CHECK_EQ(r.err, std::string(""));
 }
 
+// readings missing from a successful download used to go unnoticed unless the
+// caller compared "announced" and "received" itself
+TEST(cli_warns_when_readings_are_missing) {
+    sim::Session s;
+    s.glucose = kTwoSegments;
+    s.glucoseCountError = 1;
+    auto r = runCli(sim::sessionTrace(s));
+    CHECK_EQ(r.code, kExitOk);
+    CHECK_EQ(r.err, std::string("accuchek: warning: the meter announced 4 readings, 3 received\n"));
+    CHECK(std::string::npos!=r.out.find("  \"glucose\": {\"announced\":4, \"received\":3},\n"));
+    CHECK_EQ(runCli(sim::sessionTrace(kTwoSegments)).err, std::string(""));
+}
+
 // a full disk used to end in exit code 0 with the readings lost
 TEST(cli_unwritable_stdout_is_an_error) {
     auto full = runCli(sim::sessionTrace(kTwoSegments), ">/dev/full");

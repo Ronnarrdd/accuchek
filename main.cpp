@@ -761,6 +761,9 @@ static std::string run(
 
         closeLibUSB(libUSBContext);
     }
+    for(const auto &warning : countWarnings(g_report)) {
+        fprintf(stderr, "accuchek: warning: %s\n", warning.c_str());
+    }
     return outputJson(g_report, g_samples);
 }
 

@@ -69,4 +69,28 @@ std::string outputJson(
     return out;
 }
 
+static void checkCount(
+    std::vector<std::string> &warnings,
+    const char *what,
+    const SegmentCount &count
+) {
+    if(count.announced && count.expected!=count.received) {
+        warnings.push_back(
+            std::string("the meter announced ") + std::to_string(count.expected) + " " + what +
+            ", " + std::to_string(count.received) + " received"
+        );
+    }
+}
+
+std::vector<std::string> countWarnings(
+    const SessionReport &report
+) {
+    std::vector<std::string> warnings;
+    checkCount(warnings, "readings", report.glucose);
+    if(report.hasMealSegment) {
+        checkCount(warnings, "meal markers", report.meal);
+    }
+    return warnings;
+}
+
 } // namespace accuchek

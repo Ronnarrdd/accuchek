@@ -72,6 +72,24 @@ TEST(output_with_meter_clock_and_meals) {
     CHECK_EQ(out.substr(out.size() - 9), std::string(" }\n  ]\n}\n"));
 }
 
+TEST(output_count_warnings) {
+    SessionReport report;
+    CHECK(countWarnings(report).empty());
+    report.glucose = {false, 0, 12};        // not announced: nothing to compare
+    CHECK(countWarnings(report).empty());
+    report.glucose = {true, 12, 12};
+    report.meal = {true, 3, 1};             // ignored without a meal segment
+    CHECK(countWarnings(report).empty());
+    report.glucose = {true, 638, 637};
+    report.hasMealSegment = true;
+    auto warnings = countWarnings(report);
+    CHECK_EQ(warnings.size(), 2u);
+    if(2==warnings.size()) {
+        CHECK_EQ(warnings[0], std::string("the meter announced 638 readings, 637 received"));
+        CHECK_EQ(warnings[1], std::string("the meter announced 3 meal markers, 1 received"));
+    }
+}
+
 // replaying without --now: the PC side of the clock is unknown
 TEST(output_clock_with_unknown_pc) {
     SessionReport report;

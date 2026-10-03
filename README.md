@@ -85,6 +85,7 @@ One JSON object, written only after the whole download succeeded. Formal definit
 }
 ```
 
+- `glucose.announced` is the count the meter gives for its glucose segment, `received` the readings actually downloaded (same for `meal`). When they differ, the download still succeeds (exit code 0) and stderr gets `accuchek: warning: the meter announced N readings, M received`.
 - `timestamp` is the meter time. `epoch` is that time read in the PC time zone, summer time included.
 - Every reading is written, whatever its `status` (raw value from the meter, 0 for a normal reading).
 - Off-scale readings get `"range": "high"` with 601 mg/dL (HI) or `"range": "low"` with 9 mg/dL (LO), as in the Tidepool driver.
