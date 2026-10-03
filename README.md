@@ -64,6 +64,8 @@ accuchek --config my-meters.txt                 # add or disable models (format:
 accuchek --help
 ```
 
+Ambiguous command lines are refused with exit code 1 rather than guessed: a `DEVICE_INDEX` that is not a plain number, an option given twice, `--capture` or `DEVICE_INDEX` with `--replay`, a `--now` that is not a real local time (2026/02/30, or 02:30 on the night clocks spring forward).
+
 `--set-time` only writes the clock when the meter declares it settable and the PC clock is NTP synchronized (`adjtimex` without `TIME_ERROR`). A meter that refuses does not stop the download (`"action": "rejected"`).
 
 A trace holds all your readings: it is health data. Keep it out of public places; the `.gitignore` ignores `*.trace` outside `tests/fixtures/`.

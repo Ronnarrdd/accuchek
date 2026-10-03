@@ -29,6 +29,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -692,28 +693,51 @@ static std::string run(
     const char *configPath = 0;
     const char *nowText = 0;
     bool listDevices = false;
+    // an option given twice is a typo or a script bug, never "last one wins"
+    auto value = [&](int &i, const char *&slot) {
+        if(0!=slot) {
+            die(kExitUsage, "%s given twice", argv[i]);
+        }
+        slot = argv[++i];
+    };
     for(int i=1; i<argc; ++i) {
         if(0==strcmp(argv[i], "--help") || 0==strcmp(argv[i], "-h")) {
             return kUsage;
         } else if(0==strcmp(argv[i], "--version")) {
             return std::string("accuchek ") + ACCUCHEK_VERSION + "\n";
         } else if(0==strcmp(argv[i], "--config") && i+1<argc) {
-            configPath = argv[++i];
+            value(i, configPath);
         } else if(0==strcmp(argv[i], "--set-time")) {
             g_options.setTime = true;
         } else if(0==strcmp(argv[i], "--now") && i+1<argc) {
-            nowText = argv[++i];
+            value(i, nowText);
         } else if(0==strcmp(argv[i], "--known-devices")) {
             listDevices = true;
         } else if(0==strcmp(argv[i], "--capture") && i+1<argc) {
-            capturePath = argv[++i];
+            value(i, capturePath);
         } else if(0==strcmp(argv[i], "--replay") && i+1<argc) {
-            replayPath = argv[++i];
+            value(i, replayPath);
         } else if('-'!=argv[i][0]) {
-            deviceIndex = atoi(argv[i]);
+            // atoi used to turn "foo" into meter #0
+            char *end = 0;
+            errno = 0;
+            auto n = strtol(argv[i], &end, 10);
+            if(!isdigit((unsigned char)argv[i][0]) || 0!=*end || 0!=errno || 9999<n) {
+                die(kExitUsage, "bad DEVICE_INDEX %s, expected 0, 1, 2... (see accuchek --help)", argv[i]);
+            }
+            if(0<=deviceIndex) {
+                die(kExitUsage, "DEVICE_INDEX given twice");
+            }
+            deviceIndex = int(n);
         } else {
             die(kExitUsage, "unknown or incomplete option %s (see accuchek --help)", argv[i]);
         }
+    }
+    if(0!=replayPath && 0!=capturePath) {
+        die(kExitUsage, "--capture records a meter, it does not go with --replay");
+    }
+    if(0!=replayPath && 0<=deviceIndex) {
+        die(kExitUsage, "DEVICE_INDEX selects a meter, it does not go with --replay");
     }
 
     if(0!=configPath) {
@@ -730,13 +754,22 @@ static std::string run(
         }
         struct tm t;
         memset(&t, 0, sizeof(t));
-        if(6!=sscanf(nowText, "%d/%d/%d %d:%d:%d", &t.tm_year, &t.tm_mon, &t.tm_mday, &t.tm_hour, &t.tm_min, &t.tm_sec)) {
+        int consumed = 0;
+        if(6!=sscanf(nowText, "%d/%d/%d %d:%d:%d%n", &t.tm_year, &t.tm_mon, &t.tm_mday, &t.tm_hour, &t.tm_min, &t.tm_sec, &consumed) ||
+            0!=nowText[consumed]) {
             die(kExitUsage, "bad --now %s, expected \"YYYY/MM/DD HH:MM:SS\"", nowText);
         }
         t.tm_year -= 1900;
         t.tm_mon -= 1;
         t.tm_isdst = -1;
+        auto asked = t;
         auto now = mktime(&t);
+        // mktime normalizes 2026/13/45 into 2027/02/14 and shifts times in the
+        // spring forward gap: a date that does not come back unchanged is wrong
+        if(asked.tm_year!=t.tm_year || asked.tm_mon!=t.tm_mon || asked.tm_mday!=t.tm_mday ||
+            asked.tm_hour!=t.tm_hour || asked.tm_min!=t.tm_min || asked.tm_sec!=t.tm_sec) {
+            die(kExitUsage, "bad --now %s, no such local time", nowText);
+        }
         g_options.pcClock = [now]() { return PcClock{now, true, true}; };
     }
     if(listDevices) {

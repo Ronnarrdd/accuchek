@@ -712,6 +712,48 @@ TEST(cli_now_needs_replay) {
     CHECK(0==bad.err.find("accuchek: bad --now"));
 }
 
+// mktime used to normalize any date: 2026/13/45 99:99:99 became 2027/02/18
+TEST(cli_now_must_be_a_real_local_time) {
+    auto trace = sim::sessionTrace(kTwoSegments);
+    for(const char *now : {"2026/13/45 99:99:99", "2026/02/30 12:00:00", "2026/03/29 02:30:00"}) {
+        auto r = runCli(trace, std::string("--now \"") + now + "\"");
+        CHECK_EQ(r.code, kExitUsage);
+        CHECK_EQ(r.err, std::string("accuchek: bad --now ") + now + ", no such local time\n");
+        CHECK_EQ(r.out, std::string(""));
+    }
+    auto trailing = runCli(trace, "--now \"2026/10/01 20:42:52x\"");
+    CHECK_EQ(trailing.code, kExitUsage);
+    CHECK(0==trailing.err.find("accuchek: bad --now 2026/10/01 20:42:52x, expected"));
+    // both sides of the autumn change exist, the first one is taken
+    CHECK_EQ(runCli(trace, "--now \"2026/10/25 02:30:00\"").code, kExitOk);
+}
+
+// atoi used to read "foo" as meter #0, and options given twice kept the last one
+TEST(cli_rejects_ambiguous_arguments) {
+    struct Case {
+        const char *args;
+        const char *err;
+    };
+    const Case cases[] = {
+        {"foo", "bad DEVICE_INDEX foo, expected 0, 1, 2... (see accuchek --help)"},
+        {"1x", "bad DEVICE_INDEX 1x, expected 0, 1, 2... (see accuchek --help)"},
+        {"+1", "bad DEVICE_INDEX +1, expected 0, 1, 2... (see accuchek --help)"},
+        {"99999999999", "bad DEVICE_INDEX 99999999999, expected 0, 1, 2... (see accuchek --help)"},
+        {"0 1", "DEVICE_INDEX given twice"},
+        {"--config a --config b", "--config given twice"},
+        {"--replay a --replay b", "--replay given twice"},
+        {"--capture a --capture b", "--capture given twice"},
+        {"--replay a --capture b", "--capture records a meter, it does not go with --replay"},
+        {"1 --replay a", "DEVICE_INDEX selects a meter, it does not go with --replay"},
+    };
+    for(const auto &c : cases) {
+        auto r = runBinary(c.args);
+        CHECK_EQ(r.code, kExitUsage);
+        CHECK_EQ(r.err, std::string("accuchek: ") + c.err + "\n");
+        CHECK_EQ(r.out, std::string(""));
+    }
+}
+
 TEST(cli_outputs_flagged_samples) {
     auto r = runCli(sim::sessionTrace(kFlags));
     CHECK_EQ(r.code, 0);
