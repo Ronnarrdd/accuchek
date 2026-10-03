@@ -343,6 +343,74 @@ TEST(session_with_many_segments) {
     CHECK(t->finished());
 }
 
+// a meter that answers every ACK with one more segment, never flagged last;
+// the download used to loop forever, eating memory
+struct EndlessMeter : Transport {
+    ReplayTransport prefix;
+    sim::Bytes segment = sim::dataSegment(0x20, 0x0100, 0, {{2026, 1, 1, 8, 0, 100, 0}}, true, false);
+    size_t segmentsSent = 0;
+
+    explicit EndlessMeter(const std::string &trace) : prefix(trace) {}
+
+    int controlStatus(uint8_t *buffer, size_t len) override { return prefix.controlStatus(buffer, len); }
+    int bulkOut(const uint8_t *buffer, size_t len) override {
+        return prefix.finished() ? int(len) : prefix.bulkOut(buffer, len);
+    }
+    int bulkIn(uint8_t *buffer, size_t maxLen) override {
+        if(!prefix.finished()) {
+            return prefix.bulkIn(buffer, maxLen);
+        }
+        memcpy(buffer, segment.data(), segment.size());
+        ++segmentsSent;
+        return int(segment.size());
+    }
+    const char *errorName(int code) override { return prefix.errorName(code); }
+};
+
+// the session up to the glucose segment headers, the meter takes over after
+static std::string untilSegmentHeaders() {
+    auto full = sim::sessionTrace(kTwoSegments);
+    size_t end = 0;
+    for(int i=0; i<=kLineSegmentHeaders; ++i) {
+        end = full.find('\n', end) + 1;
+    }
+    return full.substr(0, end);
+}
+
+TEST(session_gives_up_on_a_segment_that_never_ends) {
+    EndlessMeter meter(untilSegmentHeaders());
+    SessionReport report;
+    std::vector<Sample> samples;
+    try {
+        downloadSamples(meter, SessionOptions(), report, [&](const Sample &s) { samples.push_back(s); });
+        CHECK(false);
+    } catch(const SessionError &e) {
+        CHECK_EQ(e.code, kExitProtocol);
+        CHECK_EQ(std::string(e.what()), "no last data segment after " + std::to_string(kMaxDataMessages) + " messages");
+    }
+    CHECK_EQ(meter.segmentsSent, kMaxDataMessages);
+    CHECK(samples.empty());
+}
+
+// the limit counts messages, a meter flagging the last one right at the limit passes
+TEST(session_data_message_limit_boundary) {
+    std::vector<std::vector<sim::Record>> segments;
+    for(int k=0; k<10; ++k) {
+        segments.push_back({{2024, 1, 1 + k, 8, 0, uint16_t(100 + k), 0}});
+    }
+    SessionOptions options;
+    options.maxDataMessages = 10;
+    SessionReport report;
+    CHECK_EQ(downloadWith(sim::sessionTrace(segments), options, report).size(), 10u);
+    options.maxDataMessages = 9;
+    try {
+        downloadWith(sim::sessionTrace(segments), options, report);
+        CHECK(false);
+    } catch(const SessionError &e) {
+        CHECK_EQ(std::string(e.what()), std::string("no last data segment after 9 messages"));
+    }
+}
+
 TEST(session_association_abort) {
     auto trace = replaceLine(sim::sessionTrace(kTwoSegments), kLineMdsAnswer, "< E60000020000");
     auto f = sessionFailure(trace);

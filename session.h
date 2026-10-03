@@ -60,9 +60,15 @@
     // meter clock further than this from the PC clock gets set, when asked to
     static constexpr long kClockToleranceS = 60;
 
+    // data messages read from one segment before giving up on its "last" flag:
+    // a Guide stores at most 720 readings and sends at least one per message,
+    // so a meter going past this never ends; bounds memory (1 KB per message)
+    static constexpr size_t kMaxDataMessages = 4096;
+
     struct SessionOptions {
         bool setTime = false;
         std::function<PcClock()> pcClock;   // PC clock unknown when empty
+        size_t maxDataMessages = kMaxDataMessages;
     };
 
     // why the meter clock was or was not set

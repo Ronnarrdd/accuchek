@@ -133,7 +133,7 @@ make fuzz          # 200 000 mutated packets against guard pages, 0 crash expect
 | `tests/sim.h` | Meter simulator building packets with the Tidepool driver layout. |
 | `tests/fixtures/` | `*.trace`: simulated sessions; `guide925_*.hex`: answers from a real Guide 925, serial number, system id and dates replaced. |
 
-Every decoder takes the number of bytes actually received and reads through `Reader`, which refuses to go past the end: a truncated or inconsistent packet stops the download with a precise message. The fuzzer puts each mutated packet right before a protected memory page, so reading a single byte too far crashes even without AddressSanitizer. On a crash it prints the command that replays that iteration (`FUZZ_ARGS="--seed S --from N --count 1" make fuzz`).
+Every decoder takes the number of bytes actually received and reads through `Reader`, which refuses to go past the end: a truncated or inconsistent packet stops the download with a precise message. A segment whose last message never comes stops after `kMaxDataMessages` (4096) messages, exit code 5, instead of looping forever. The fuzzer puts each mutated packet right before a protected memory page, so reading a single byte too far crashes even without AddressSanitizer. On a crash it prints the command that replays that iteration (`FUZZ_ARGS="--seed S --from N --count 1" make fuzz`).
 
 After changing the simulator, regenerate the fixtures with `ACCUCHEK_UPDATE_FIXTURES=1 make test` and review the diff.
 
