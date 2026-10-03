@@ -94,7 +94,6 @@ struct USBDevice {
     uint8_t configValue;
     uint8_t interfaceNumber;
     uint8_t alternateSetting;
-    libusb_device_handle *devHandle;
 
     // constructor
     USBDevice(
@@ -117,8 +116,7 @@ struct USBDevice {
             rcvEndPoint(_rcvEndPoint),
             configValue(cfg->bConfigurationValue),
             interfaceNumber(altSetting->bInterfaceNumber),
-            alternateSetting(altSetting->bAlternateSetting),
-            devHandle(0)
+            alternateSetting(altSetting->bAlternateSetting)
     {
         // increase refcount on libusb device handle
         libusb_ref_device(dev);
@@ -137,12 +135,12 @@ struct USBDevice {
             rcvEndPoint(rhs.rcvEndPoint),
             configValue(rhs.configValue),
             interfaceNumber(rhs.interfaceNumber),
-            alternateSetting(rhs.alternateSetting),
-            devHandle(rhs.devHandle)
+            alternateSetting(rhs.alternateSetting)
     {
         // increase refcount on libusb device handle
         libusb_ref_device(dev);
     }
+    USBDevice &operator=(const USBDevice &) = delete;
 
     // destructor
     ~USBDevice() {
@@ -186,10 +184,14 @@ struct USBDevice {
 // transport over an opened and claimed libusb device
 struct LibusbTransport : Transport {
 
-    explicit LibusbTransport(
-        const USBDevice &_usbDevice
+    LibusbTransport(
+        libusb_device_handle *_devHandle,
+        uint8_t _sndEndPoint,
+        uint8_t _rcvEndPoint
     )
-        :   usbDevice(_usbDevice)
+        :   devHandle(_devHandle),
+            sndEndPoint(_sndEndPoint),
+            rcvEndPoint(_rcvEndPoint)
     {
     }
 
@@ -198,7 +200,7 @@ struct LibusbTransport : Transport {
         size_t len
     ) override {
         return libusb_control_transfer(
-            usbDevice.devHandle,
+            devHandle,
             (
                 LIBUSB_REQUEST_TYPE_STANDARD |
                 LIBUSB_RECIPIENT_DEVICE      |
@@ -219,8 +221,8 @@ struct LibusbTransport : Transport {
     ) override {
         int bytesWritten = -1;
         auto fail = libusb_bulk_transfer(
-            usbDevice.devHandle,
-            usbDevice.sndEndPoint,
+            devHandle,
+            sndEndPoint,
             const_cast<uint8_t *>(buffer),
             len,
             &bytesWritten,
@@ -235,8 +237,8 @@ struct LibusbTransport : Transport {
     ) override {
         int bytesRead = 0;
         auto fail = libusb_bulk_transfer(
-            usbDevice.devHandle,
-            usbDevice.rcvEndPoint,
+            devHandle,
+            rcvEndPoint,
             buffer,
             maxLen,
             &bytesRead,
@@ -252,7 +254,9 @@ struct LibusbTransport : Transport {
     }
 
     static constexpr unsigned kTimeoutMs = 5000;
-    const USBDevice &usbDevice;
+    libusb_device_handle *devHandle;
+    uint8_t sndEndPoint;
+    uint8_t rcvEndPoint;
 };
 
 /*
@@ -323,25 +327,57 @@ static ExitCode usbFailure(
     return (LIBUSB_ERROR_ACCESS==code ? kExitAccessDenied : kExitTransfer);
 }
 
+// an opened device handle, closed on every path out
+struct DeviceHandle {
+    libusb_device_handle *handle = 0;
+    DeviceHandle() = default;
+    DeviceHandle(const DeviceHandle &) = delete;
+    DeviceHandle &operator=(const DeviceHandle &) = delete;
+    ~DeviceHandle() {
+        if(0!=handle) {
+            libusb_close(handle);
+        }
+    }
+};
+
+// the meter interface, given back on every path out: released, then the
+// kernel driver we detached (if any) is reattached
+struct ClaimedInterface {
+    libusb_device_handle *handle;
+    int interface;
+    bool claimed = false;
+    bool driverDetached = false;
+    ClaimedInterface(libusb_device_handle *_handle, int _interface) : handle(_handle), interface(_interface) {}
+    ClaimedInterface(const ClaimedInterface &) = delete;
+    ClaimedInterface &operator=(const ClaimedInterface &) = delete;
+    ~ClaimedInterface() {
+        if(claimed) {
+            libusb_release_interface(handle, interface);
+        }
+        if(driverDetached) {
+            libusb_attach_kernel_driver(handle, interface);
+        }
+    }
+};
+
 // open an accuchek USB device and download data from it
 static void operateDevice(
     USBDevice &usbDevice,
     const char *capturePath
 ) {
     // open device
-    auto dev = usbDevice.dev;
-    libusb_device_handle *devHandle = 0;
-    auto fail0 = libusb_open(dev, &devHandle);
+    DeviceHandle device;
+    auto fail0 = libusb_open(usbDevice.dev, &device.handle);
     if(fail0) {
+        device.handle = 0;
         die(usbFailure(fail0), "cannot open meter: %s", libusb_strerror(fail0));
     }
-    usbDevice.devHandle = devHandle;
+    auto devHandle = device.handle;
+    ClaimedInterface interface(devHandle, usbDevice.interfaceNumber);
 
-    // detach whatever kernel driver may have been attached to it
-    libusb_detach_kernel_driver(
-        devHandle,
-        usbDevice.interfaceNumber
-    );
+    // detach whatever kernel driver may have been attached to it (none for a
+    // PHDC meter on Linux: LIBUSB_ERROR_NOT_FOUND)
+    interface.driverDetached = (0==libusb_detach_kernel_driver(devHandle, usbDevice.interfaceNumber));
 
     // load the configuration chosen during detection phase
     auto fail1 = libusb_set_configuration(devHandle, usbDevice.configValue);
@@ -354,6 +390,7 @@ static void operateDevice(
     if(fail2<0) {
         die(usbFailure(fail2), "cannot claim meter interface: %s", libusb_strerror(fail2));
     }
+    interface.claimed = true;
 
     // set alt setting chosen during detection phase on interface
     auto fail3 = libusb_set_interface_alt_setting(devHandle, usbDevice.interfaceNumber, usbDevice.alternateSetting);
@@ -365,28 +402,32 @@ static void operateDevice(
     LOG_NFO("using device snd endpoint = %d", usbDevice.sndEndPoint);
     LOG_NFO("using device rcv endpoint = %d\n", usbDevice.rcvEndPoint);
 
-    LibusbTransport usb(usbDevice);
+    LibusbTransport usb(devHandle, usbDevice.sndEndPoint, usbDevice.rcvEndPoint);
     if(0!=capturePath) {
         auto fp = fopen(capturePath, "w");
         if(0==fp) {
             die(kExitUsage, "cannot write trace %s", capturePath);
         }
         // keep the trace of a failed download too, that is when it is most useful
+        auto closeTrace = [&]() {
+            auto failed = (0!=ferror(fp));
+            failed = (0!=fclose(fp)) || failed;
+            if(failed) {
+                fprintf(stderr, "accuchek: warning: cannot write trace %s, it is incomplete\n", capturePath);
+            }
+        };
         RecordingTransport recording(usb, fp);
         try {
             runSession(recording);
         } catch(const Fatal &) {
-            fclose(fp);
+            closeTrace();
             throw;
         }
-        fclose(fp);
+        closeTrace();
     } else {
         runSession(usb);
     }
-
-    // protocol step: close device
     LOG_NFO("closing usb device");
-    libusb_close(devHandle);
 }
 
 // process one USB device and add it to the list if it matches requirements
@@ -482,9 +523,10 @@ static void addDeviceIfAccuChek(
 
         // we found a device seems to fit the bill, open it
         LOG_NFO("found a usb device that looks good, checking further by opening it");
-        libusb_device_handle *devHandle = 0;
-        auto fail1 = libusb_open(dev, &devHandle);
+        DeviceHandle probe;
+        auto fail1 = libusb_open(dev, &probe.handle);
         if(fail1) {
+            probe.handle = 0;
             LOG_WRN("libusb_open failed: %s", libusb_strerror(fail1));
             if(LIBUSB_ERROR_ACCESS==fail1) {
                 char where[128];
@@ -506,14 +548,13 @@ static void addDeviceIfAccuChek(
         char vendor[512];
         memset(vendor, 0, sizeof(vendor));
         auto r0 = libusb_get_string_descriptor_ascii(
-            devHandle,
+            probe.handle,
             dsc.iManufacturer,
             (uint8_t*)vendor,
             (-1+sizeof(vendor))
         );
         if(r0<0) {
             LOG_NFO("not a match, vendorId unreadable");
-            libusb_close(devHandle);
             break;
         }
 
@@ -521,14 +562,13 @@ static void addDeviceIfAccuChek(
         char product[512];
         memset(product, 0, sizeof(product));
         auto r1 = libusb_get_string_descriptor_ascii(
-            devHandle,
+            probe.handle,
             dsc.iProduct,
             (uint8_t*)product,
             (-1+sizeof(product))
         );
         if(r1<0) {
             LOG_NFO("not a match, productId unreadable");
-            libusb_close(devHandle);
             break;
         }
 
@@ -545,7 +585,6 @@ static void addDeviceIfAccuChek(
             cfg,
             altSetting
         );
-        libusb_close(devHandle);
     } while(0);
 
     // free config data structure
@@ -613,29 +652,28 @@ static void findAndOperateAccuChek(
     operateDevice(selectedDevice, capturePath);
 }
 
-// open libusb, return handle
-static libusb_context *openLibUSB() {
-
-    LOG_NFO("opening libusb");
-
-    // init libusb
-    libusb_context *libUSBContext = 0;
-    auto fail = libusb_init(&libUSBContext);
-    if(0!=fail || 0==libUSBContext) {
-        die(kExitTransfer, "cannot initialize libusb: %s", libusb_strerror(fail));
+// the libusb context, exited on every path out (after every handle and
+// device it gave is released: declare it first)
+struct UsbContext {
+    libusb_context *context = 0;
+    UsbContext() {
+        LOG_NFO("opening libusb");
+        auto fail = libusb_init(&context);
+        if(0!=fail || 0==context) {
+            context = 0;
+            die(kExitTransfer, "cannot initialize libusb: %s", libusb_strerror(fail));
+        }
+        LOG_NFO("libusb opened OK");
     }
-
-    LOG_NFO("libusb opened OK");
-    return libUSBContext;
-}
-
-// close libusb
-static void closeLibUSB(
-    libusb_context *libUSBContext
-) {
-    LOG_NFO("closing libusb");
-    libusb_exit(libUSBContext);
-}
+    UsbContext(const UsbContext &) = delete;
+    UsbContext &operator=(const UsbContext &) = delete;
+    ~UsbContext() {
+        if(0!=context) {
+            LOG_NFO("closing libusb");
+            libusb_exit(context);
+        }
+    }
+};
 
 // replay a recorded trace instead of talking to a device
 static void replayTrace(
@@ -787,12 +825,10 @@ static std::string run(
         replayTrace(replayPath);
     } else {
         // open libusb
-        auto libUSBContext = openLibUSB();
+        UsbContext usb;
 
         // find and talk to one accuchek device
-        findAndOperateAccuChek(libUSBContext, deviceIndex, capturePath);
-
-        closeLibUSB(libUSBContext);
+        findAndOperateAccuChek(usb.context, deviceIndex, capturePath);
     }
     for(const auto &warning : countWarnings(g_report)) {
         fprintf(stderr, "accuchek: warning: %s\n", warning.c_str());
