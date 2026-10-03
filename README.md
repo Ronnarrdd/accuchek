@@ -127,7 +127,8 @@ make fuzz          # 200 000 mutated packets against guard pages, 0 crash expect
 | `protocol.h/.cpp` | ISO/IEEE 11073 constants, outgoing messages (clock setting included), decoding of incoming messages, JSON. No I/O. |
 | `session.h/.cpp` | Full download sequence over an abstract `Transport`. Failures throw `SessionError`. |
 | `trace.h/.cpp` | Recorded USB exchanges: `RecordingTransport` (`--capture`) and `ReplayTransport` (`--replay`). |
-| `main.cpp` | Command line, USB discovery (libusb), `LibusbTransport`, JSON output. |
+| `output.h/.cpp` | The JSON object of a download (`outputJson`), built in memory. No I/O. |
+| `main.cpp` | Command line, USB discovery (libusb), `LibusbTransport`, writing the JSON on stdout. |
 | `tests/sim.h` | Meter simulator building packets with the Tidepool driver layout. |
 | `tests/fixtures/` | `*.trace`: simulated sessions; `guide925_*.hex`: answers from a real Guide 925, serial number, system id and dates replaced. |
 

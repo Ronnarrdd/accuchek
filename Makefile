@@ -12,8 +12,8 @@ SANITIZE := $(shell echo 'int main(){}' | $(CXX) -x c++ -fsanitize=address,undef
     && echo -fsanitize=address,undefined -fno-sanitize-recover=all)
 TEST_CFLAGS = -O0 -g -fno-omit-frame-pointer -D_GLIBCXX_ASSERTIONS $(SANITIZE)
 
-LIB_SRCS = protocol.cpp session.cpp trace.cpp log.cpp
-TEST_SRCS = tests/check.cpp tests/fuzz.cpp tests/test_protocol.cpp tests/test_session.cpp tests/test_bounds.cpp
+LIB_SRCS = protocol.cpp session.cpp trace.cpp output.cpp log.cpp
+TEST_SRCS = tests/check.cpp tests/fuzz.cpp tests/test_protocol.cpp tests/test_session.cpp tests/test_bounds.cpp tests/test_output.cpp
 FUZZ_SRCS = tests/fuzz.cpp tests/fuzz_main.cpp
 
 all: accuchek

@@ -20,6 +20,7 @@
 // stuff we need
 #include <log.h>
 #include <trace.h>
+#include <output.h>
 #include <session.h>
 #include <protocol.h>
 #include <string>
@@ -295,75 +296,6 @@ struct LibusbTransport : Transport {
         sndEndPnt:     1
 
 */
-
-static std::string countJson(
-    const SegmentCount &count
-) {
-    return "{\"announced\":" + (count.announced ? std::to_string(count.expected) : std::string("null")) +
-        ", \"received\":" + std::to_string(count.received) + "}";
-}
-
-static std::string localTimeString(
-    time_t t
-) {
-    struct tm local;
-    localtime_r(&t, &local);
-    char buf[32];
-    strftime(buf, sizeof(buf), "%Y/%m/%d %H:%M:%S", &local);
-    return buf;
-}
-
-// write the report and all samples as one JSON object
-static void writeOutput(
-    FILE *out
-) {
-    const auto &r = g_report;
-    fputs("{\n  \"format\": 2,\n", out);
-    if(r.hasMeter) {
-        const auto &m = r.meter;
-        fprintf(
-            out,
-            "  \"meter\": {\"manufacturer\":%s, \"model\":%s, \"serial\":%s, \"firmware\":%s, \"hardware\":%s, \"software\":%s, \"system_id\":%s},\n",
-            jsonString(m.manufacturer).c_str(),
-            jsonString(m.model).c_str(),
-            jsonString(m.serial).c_str(),
-            jsonString(m.firmware).c_str(),
-            jsonString(m.hardware).c_str(),
-            jsonString(m.software).c_str(),
-            jsonString(m.systemId).c_str()
-        );
-    } else {
-        fputs("  \"meter\": null,\n", out);
-    }
-    if(r.hasMeter && r.meter.hasClock) {
-        fprintf(
-            out,
-            "  \"clock\": {\"meter\":\"%s\", \"pc\":%s, \"offset_s\":%s, \"settable\":%s, \"pc_synchronized\":%s, \"action\":\"%s\"},\n",
-            formatTime(r.meter.clock).c_str(),
-            r.pc.known ? jsonString(localTimeString(r.pc.now)).c_str() : "null",
-            r.hasClockOffset ? std::to_string(r.clockOffsetS).c_str() : "null",
-            r.meter.clockSettable ? "true" : "false",
-            !r.pc.known ? "null" : (r.pc.synchronized ? "true" : "false"),
-            clockActionName(r.clockAction)
-        );
-    } else {
-        fputs("  \"clock\": null,\n", out);
-    }
-    fprintf(out, "  \"glucose\": %s,\n", countJson(r.glucose).c_str());
-    if(r.hasMealSegment) {
-        auto meal = countJson(r.meal);
-        meal.pop_back();
-        fprintf(out, "  \"meal\": %s, \"unmatched\":%d},\n", meal.c_str(), (int)r.mealsUnmatched);
-    } else {
-        fputs("  \"meal\": null,\n", out);
-    }
-    fputs("  \"readings\": [", out);
-    for(size_t i=0; i<g_samples.size(); ++i) {
-        fprintf(out, "%s\n    %s", (0==i ? "" : ","), sampleJson(g_samples[i], i).c_str());
-    }
-    fputs(g_samples.empty() ? "]\n}\n" : "\n  ]\n}\n", out);
-    fflush(out);
-}
 
 // run the protocol, keep samples in memory until it succeeds
 static void runSession(
@@ -842,7 +774,8 @@ int main(
         fprintf(stderr, "accuchek: %s\n", f.msg.c_str());
         return f.code;
     }
-    writeOutput(stdout);
+    fputs(outputJson(g_report, g_samples).c_str(), stdout);
+    fflush(stdout);
     LOG_NFO("done");
     return kExitOk;
 }
