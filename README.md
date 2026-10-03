@@ -173,7 +173,7 @@ The code builds without a single warning under `-Wall -Wextra -Wshadow`, with GC
 
 Every decoder takes the number of bytes actually received and reads through `Reader`, which refuses to go past the end: a truncated or inconsistent packet stops the download with a precise message. A segment whose last message never comes stops after `kMaxDataMessages` (4096) messages, exit code 5, instead of looping forever. The fuzzer puts each mutated packet right before a protected memory page, so reading a single byte too far crashes even without AddressSanitizer. On a crash it prints the command that replays that iteration (`FUZZ_ARGS="--seed S --from N --count 1" make fuzz`).
 
-`accuchek --version` comes from `git describe` in a clone (`2.1.0-3-gabcdef0` three commits after `v2.1.0`), from the `VERSION` file in a copy of the sources. To release: bump `VERSION`, commit, `git tag vX.Y.Z`, push the tag. `make test` fails when the tag and `VERSION` disagree.
+`accuchek --version` comes from `git describe` in a clone (`2.1.0-3-gabcdef0` three commits after `v2.1.0`), from the `VERSION` file in a copy of the sources. To release: bump `VERSION`, commit, `git tag vX.Y.Z`, push the tag. `make test` fails when the tag is ahead of `VERSION`.
 
 After changing the simulator, regenerate the fixtures with `ACCUCHEK_UPDATE_FIXTURES=1 make test` and review the diff.
 

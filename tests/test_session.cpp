@@ -875,19 +875,41 @@ TEST(cli_help_and_version) {
     }
 }
 
+// "2.1.0" or "2.1.0-3-gabcdef0-dirty": the X.Y.Z at the start of text
+static bool releaseOf(
+    const std::string &text,
+    std::vector<int> &release
+) {
+    int x, y, z, length = 0;
+    if(3!=sscanf(text.c_str(), "%d.%d.%d%n", &x, &y, &z, &length)) {
+        return false;
+    }
+    release = {x, y, z};
+    return '\0'==text[length] || '-'==text[length] || '\n'==text[length];
+}
+
+TEST(release_of_a_version) {
+    std::vector<int> r;
+    CHECK(releaseOf("2.10.0-3-gabcdef0-dirty", r));
+    CHECK(std::vector<int>({2, 10, 0})==r);
+    CHECK(!releaseOf("2.1", r));
+    CHECK(!releaseOf("2.1.0rc1", r));
+}
+
 // git describe gives "2.1.0", "2.1.0-3-gabcdef0" or "2.1.0-dirty" once v2.1.0
-// is tagged: tagging a release without bumping VERSION fails here
-TEST(cli_version_starts_with_the_version_file) {
+// is tagged, the VERSION file elsewhere. Tagging a release without bumping
+// VERSION fails here; bumping VERSION before tagging is the release commit.
+TEST(cli_version_is_not_ahead_of_the_version_file) {
     std::string version;
     CHECK(readFile("VERSION", version));
-    CHECK(!version.empty() && '\n'==version.back());
-    if(version.empty()) {
-        return;
-    }
-    version.pop_back();
+    std::vector<int> file, built;
+    CHECK(releaseOf(version, file));
+    CHECK_EQ(version.back(), '\n');
     auto v = runBinary("--version");
     CHECK_EQ(v.code, kExitOk);
-    CHECK_EQ(v.out.substr(0, 9 + version.size()), "accuchek " + version);
+    CHECK_EQ(v.out.substr(0, 9), std::string("accuchek "));
+    CHECK(releaseOf(v.out.substr(9), built));
+    CHECK(built<=file);
     CHECK_EQ(v.out.back(), '\n');
 }
 
