@@ -26,7 +26,7 @@ void logMessage(
     const char *format,
     ...
 ) {
-    auto slash = strrchr(file, '/');
+    const char *slash = strrchr(file, '/');
     char text[2048];
     va_list arg;
     va_start(arg, format);

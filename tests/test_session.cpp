@@ -526,8 +526,10 @@ static void checkFixture(
     if(getenv("ACCUCHEK_UPDATE_FIXTURES")) {
         auto fp = fopen(path, "w");
         CHECK(0!=fp);
-        fputs(expected.c_str(), fp);
-        fclose(fp);
+        if(fp) {
+            fputs(expected.c_str(), fp);
+            fclose(fp);
+        }
     }
     std::string text;
     CHECK(readFile(path, text));
@@ -624,6 +626,10 @@ TEST(cli_ignores_config_txt_in_current_directory) {
     CHECK(0!=mkdtemp(dir));
     auto cfg = std::string(dir) + "/config.txt";
     auto fp = fopen(cfg.c_str(), "w");
+    CHECK(0!=fp);
+    if(!fp) {
+        return;
+    }
     fputs("vendor_0x173a_device_0x21d5 0\n", fp);
     fclose(fp);
     auto r = runBinary("--known-devices", dir);
@@ -875,6 +881,9 @@ TEST(cli_version_starts_with_the_version_file) {
     std::string version;
     CHECK(readFile("VERSION", version));
     CHECK(!version.empty() && '\n'==version.back());
+    if(version.empty()) {
+        return;
+    }
     version.pop_back();
     auto v = runBinary("--version");
     CHECK_EQ(v.code, kExitOk);
@@ -893,7 +902,6 @@ TEST(udev_rule_matches_known_devices) {
         at += strlen(key);
         ids += rule.substr(at, rule.find('"', at) - at) + "\n";
     }
-    std::string expected;
     std::string products;
     auto known = runBinary("--known-devices").out;
     for(size_t at=0; at<known.size(); at=known.find('\n', at) + 1) {

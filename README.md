@@ -149,10 +149,13 @@ make test          # unit and session tests, with ASan / UBSan when available
 make schema-check  # replay every fixture, validate the JSON (pip install jsonschema)
 make fuzz          # 200 000 mutated packets against guard pages and mutated archives, 0 crash expected
 make eval-merge    # --merge on real outputs, oldest first (ARCHIVES="a.json b.json"; default: Glucofi's raw copies)
+make coverage      # line coverage of the tests, binary included, fails under 88% (pip install gcovr)
+make cppcheck      # static analysis, fails on any finding (pip install cppcheck)
+make CXX=clang++   # any target, built with clang
 make hooks         # once per clone: make test (warnings as errors) before every commit
 ```
 
-The code builds without a single warning under `-Wall -Wextra -Wshadow`; CI builds with `WERROR=-Werror` and also runs the command line tests against a binary built with ASan and UBSan.
+The code builds without a single warning under `-Wall -Wextra -Wshadow`, with GCC and clang. CI builds both with `WERROR=-Werror`, runs the command line tests against a binary built with ASan and UBSan, and runs coverage and cppcheck. The lines coverage leaves out are mostly the libusb calls of `usb.cpp`: only a real meter reaches them, their logic is tested through `DeviceOps` in `tests/test_usb.cpp`.
 
 | File | Role |
 | --- | --- |

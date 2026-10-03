@@ -45,6 +45,7 @@ int main(
         auto before = gFailures;
         t.fn();
         ++ran;
+        // cppcheck-suppress knownConditionTrueFalse ; t.fn() changes gFailures
         if(before!=gFailures) {
             fprintf(stderr, "FAIL %s\n", t.name);
         }

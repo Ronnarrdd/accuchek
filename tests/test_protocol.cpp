@@ -124,7 +124,7 @@ TEST(segment_samples_and_flags) {
     CHECK_EQ(segment.u1, 0x00070000u);
     CHECK_EQ(segment.u2, 2);
     CHECK_EQ(segment.samples.size(), 2u);
-    auto &a = segment.samples[0];
+    const auto &a = segment.samples[0];
     CHECK_EQ(a.year, 2021);
     CHECK_EQ(a.month, 3);
     CHECK_EQ(a.day, 29);
@@ -132,7 +132,7 @@ TEST(segment_samples_and_flags) {
     CHECK_EQ(a.minute, 12);
     CHECK_EQ(a.value, 133);
     CHECK_EQ(a.status, 0);
-    auto &b = segment.samples[1];
+    const auto &b = segment.samples[1];
     CHECK_EQ(b.year, 2026);
     CHECK_EQ(b.month, 12);
     CHECK_EQ(b.minute, 59);
