@@ -124,7 +124,10 @@ On failure stdout stays empty (never a partial download) and stderr holds one li
 make test          # unit and session tests, with ASan / UBSan when available
 make schema-check  # replay every fixture, validate the JSON (pip install jsonschema)
 make fuzz          # 200 000 mutated packets against guard pages, 0 crash expected
+make hooks         # once per clone: make test (warnings as errors) before every commit
 ```
+
+The code builds without a single warning under `-Wall -Wextra -Wshadow`; CI builds with `WERROR=-Werror` and also runs the command line tests against a binary built with ASan and UBSan.
 
 | File | Role |
 | --- | --- |

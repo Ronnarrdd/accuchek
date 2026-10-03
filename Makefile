@@ -1,16 +1,19 @@
-.PHONY: all clean test fuzz schema-check install uninstall
+.PHONY: all clean test fuzz schema-check install uninstall hooks
 SHELL = /bin/bash
 CXX = g++ -std=c++17
 LIBS = -lusb-1.0 -lm
 # portable by default; for a binary tuned to this machine: make OPTFLAGS="-O3 -march=native"
 OPTFLAGS ?= -O2
-CFLAGS = -g0 $(OPTFLAGS) -fomit-frame-pointer -DNDEBUG
+# the code builds without a single warning; CI and the pre-commit hook add WERROR=-Werror to keep it so
+WARNINGS = -Wall -Wextra -Wshadow
+WERROR ?=
+CFLAGS = -g0 $(OPTFLAGS) -fomit-frame-pointer -DNDEBUG $(WARNINGS) $(WERROR)
 PREFIX ?= /usr/local
 UDEVDIR ?= /etc/udev/rules.d
 # sanitizers when installed (libasan-devel, libubsan-devel)
 SANITIZE := $(shell echo 'int main(){}' | $(CXX) -x c++ -fsanitize=address,undefined - -o /dev/null 2>/dev/null \
     && echo -fsanitize=address,undefined -fno-sanitize-recover=all)
-TEST_CFLAGS = -O0 -g -fno-omit-frame-pointer -D_GLIBCXX_ASSERTIONS $(SANITIZE)
+TEST_CFLAGS = -O0 -g -fno-omit-frame-pointer -D_GLIBCXX_ASSERTIONS $(SANITIZE) $(WARNINGS) $(WERROR)
 
 LIB_SRCS = protocol.cpp session.cpp trace.cpp output.cpp log.cpp
 TEST_SRCS = tests/check.cpp tests/fuzz.cpp tests/test_protocol.cpp tests/test_session.cpp tests/test_bounds.cpp tests/test_output.cpp
@@ -55,6 +58,11 @@ fuzz: .objs/test/fuzz
 # replay every fixture and validate the JSON against the schema (pip install jsonschema)
 schema-check: accuchek
 	@ACCUCHEK_BIN="$(CURDIR)/accuchek" python3 tests/check_schema.py
+
+# gate tests before every commit (hooks/pre-commit)
+hooks:
+	git config core.hooksPath hooks
+	@echo "pre-commit hook active: make test runs before every commit"
 
 # reload udev afterwards: udevadm control --reload && udevadm trigger --subsystem-match=usb
 install: accuchek
