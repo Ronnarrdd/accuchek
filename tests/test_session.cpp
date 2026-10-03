@@ -900,7 +900,15 @@ TEST(cli_debug_logs_stay_off_stdout) {
     CHECK_EQ(debug.code, kExitOk);
     CHECK_EQ(debug.out, quiet.out);
     CHECK(std::string::npos!=debug.err.find("BUFFER START"));
+    CHECK(0==debug.err.find("accuchek[nfo] +"));
     CHECK_EQ(quiet.err, std::string(""));
+}
+
+// the old logger compiled $LOG as a regex: LOG='[' ended in std::regex_error, exit 134
+TEST(cli_debug_ignores_log_variable) {
+    auto r = runCli(sim::sessionTrace(kTwoSegments), "", "env ACCUCHEK_DBG=1 LOG='['");
+    CHECK_EQ(r.code, kExitOk);
+    CHECK(std::string::npos==r.err.find("regex"));
 }
 
 // accuchek used to refuse to run unless root; USB access now comes from udev.

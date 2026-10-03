@@ -38,7 +38,6 @@
 #include <algorithm>
 #include <libusb-1.0/libusb.h>
 
-extern bool gQuiet;
 
 using namespace accuchek;
 

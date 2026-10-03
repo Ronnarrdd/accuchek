@@ -2,8 +2,7 @@
 #include <time.h>
 #include <stdlib.h>
 #include <string.h>
-
-extern bool gQuiet;
+#include <log.h>
 
 static int gFailures = 0;
 

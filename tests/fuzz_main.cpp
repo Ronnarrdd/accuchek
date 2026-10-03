@@ -6,8 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
-extern bool gQuiet;
+#include <log.h>
 
 static uint64_t gSeed = 20261001;
 
