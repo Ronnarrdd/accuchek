@@ -1,4 +1,4 @@
-.PHONY: all clean test fuzz schema-check install uninstall hooks
+.PHONY: all clean test fuzz eval-merge schema-check install uninstall hooks
 SHELL = /bin/bash
 CXX = g++ -std=c++17
 LIBS = -lusb-1.0 -lm
@@ -20,8 +20,8 @@ SANITIZE := $(shell echo 'int main(){}' | $(CXX) -x c++ -fsanitize=address,undef
     && echo -fsanitize=address,undefined -fno-sanitize-recover=all)
 TEST_CFLAGS = -O0 -g -fno-omit-frame-pointer -D_GLIBCXX_ASSERTIONS $(SANITIZE) $(WARNINGS) $(WERROR)
 
-LIB_SRCS = protocol.cpp session.cpp trace.cpp output.cpp log.cpp usb.cpp
-TEST_SRCS = tests/check.cpp tests/fuzz.cpp tests/test_protocol.cpp tests/test_session.cpp tests/test_bounds.cpp tests/test_output.cpp tests/test_log.cpp tests/test_usb.cpp
+LIB_SRCS = protocol.cpp session.cpp trace.cpp output.cpp log.cpp usb.cpp json.cpp merge.cpp
+TEST_SRCS = tests/check.cpp tests/fuzz.cpp tests/test_protocol.cpp tests/test_session.cpp tests/test_bounds.cpp tests/test_output.cpp tests/test_log.cpp tests/test_usb.cpp tests/test_json.cpp tests/test_merge.cpp
 FUZZ_SRCS = tests/fuzz.cpp tests/fuzz_main.cpp
 
 all: accuchek
@@ -67,6 +67,15 @@ test: accuchek .objs/test/run_tests
 
 fuzz: .objs/test/fuzz
 	@.objs/test/fuzz $(FUZZ_ARGS)
+
+# periodic eval: --merge on real outputs (health data, never in the repo), oldest first
+ARCHIVES ?= $(sort $(wildcard $(HOME)/.local/share/glucofi/raw/accuchek-*.json))
+.objs/test/eval_merge: $(LIB_SRCS:%.cpp=.objs/test/%.o) .objs/test/tests/eval_merge.o
+	@echo lnk -- $@
+	@$(CXX) $(TEST_CFLAGS) -o $@ $^ $(LIBS)
+
+eval-merge: .objs/test/eval_merge
+	@.objs/test/eval_merge $(ARCHIVES)
 
 # replay every fixture and validate the JSON against the schema (pip install jsonschema)
 schema-check: accuchek

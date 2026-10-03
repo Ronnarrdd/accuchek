@@ -365,6 +365,9 @@
     // "fasting", "before_meal"... for a MDC_CTXT_GLU_MEAL_* code, "other" for an unknown one
     const char *mealName(uint16_t meal);
 
+    // calendar ranges of a sample date (BCD digits that were not BCD decode to -1)
+    bool isValidDate(const Sample &sample);
+
     // epoch of a sample, computed from the device local time
     time_t sampleEpoch(const Sample &sample);
 

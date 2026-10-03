@@ -501,7 +501,7 @@ int decodeBcd(
     return 10*hi + lo;
 }
 
-static bool isValidDate(
+bool isValidDate(
     const Sample &s
 ) {
     return (

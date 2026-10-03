@@ -745,6 +745,7 @@ TEST(cli_rejects_ambiguous_arguments) {
         {"--config a --config b", "--config given twice"},
         {"--replay a --replay b", "--replay given twice"},
         {"--capture a --capture b", "--capture given twice"},
+        {"--merge a --merge b", "--merge given twice"},
         {"--replay a --capture b", "--capture records a meter, it does not go with --replay"},
         {"1 --replay a", "DEVICE_INDEX selects a meter, it does not go with --replay"},
     };
@@ -911,6 +912,117 @@ TEST(cli_debug_ignores_log_variable) {
     auto r = runCli(sim::sessionTrace(kTwoSegments), "", "env ACCUCHEK_DBG=1 LOG='['");
     CHECK_EQ(r.code, kExitOk);
     CHECK(std::string::npos==r.err.find("regex"));
+}
+
+// text without every ', "key":"..."' of the readings: an output of accuchek before 2.2
+static std::string withoutKeys(
+    std::string text
+) {
+    const std::string marker = ", \"key\":\"";
+    for(auto at = text.find(marker); std::string::npos!=at; at = text.find(marker, at)) {
+        text.erase(at, marker.size() + 16 + 1);
+    }
+    return text;
+}
+
+static std::string replaceAll(
+    std::string text,
+    const std::string &from,
+    const std::string &to
+) {
+    for(auto at = text.find(from); std::string::npos!=at; at = text.find(from, at + to.size())) {
+        text.replace(at, from.size(), to);
+    }
+    return text;
+}
+
+TEST(cli_merge_with_itself_changes_nothing) {
+    auto trace = sim::sessionTrace(mealSession());
+    auto plain = runCli(trace);
+    CHECK_EQ(plain.code, kExitOk);
+    auto archive = writeTemp(plain.out);
+    auto merged = runCli(trace, "--merge " + archive);
+    CHECK_EQ(merged.code, kExitOk);
+    CHECK_EQ(merged.err, std::string(""));
+    CHECK_EQ(merged.out, plain.out);
+    unlink(archive.c_str());
+}
+
+// a full meter drops its oldest reading for each new one: the archive keeps it
+TEST(cli_merge_keeps_the_readings_the_meter_dropped) {
+    sim::Session before;
+    before.glucose = kTwoSegments;
+    sim::Session after;
+    after.glucose = {
+        {{2021, 1, 15, 12, 30, 192, 0}},
+        {{2021, 1, 16, 7, 45, 98, 0}, {2021, 1, 17, 9, 15, 150, 0}},
+    };
+    auto archive = writeTemp(runCli(sim::sessionTrace(before)).out);
+    auto r = runCli(sim::sessionTrace(after), "--merge " + archive);
+    CHECK_EQ(r.code, kExitOk);
+    // the counters describe this download, the readings the whole history
+    CHECK(std::string::npos!=r.out.find("  \"glucose\": {\"announced\":3, \"received\":3},\n"));
+    for(const char *t : {"2021/01/15 08:00", "2021/01/15 12:30", "2021/01/16 07:45", "2021/01/17 09:15"}) {
+        CHECK(std::string::npos!=r.out.find(t));
+    }
+    // the archive reading first, then the download in meter order
+    CHECK(r.out.find("2021/01/15 08:00")<r.out.find("2021/01/15 12:30"));
+    CHECK(r.out.find("2021/01/16 07:45")<r.out.find("2021/01/17 09:15"));
+    CHECK(std::string::npos!=r.out.find("{ \"id\":     3, "));
+    CHECK(std::string::npos==r.out.find("{ \"id\":     4, "));
+    // the next download merges into this output the same way
+    auto next = writeTemp(r.out);
+    CHECK_EQ(runCli(sim::sessionTrace(after), "--merge " + next).out, r.out);
+    unlink(archive.c_str());
+    unlink(next.c_str());
+}
+
+// readings archived before 2.2 have no key: matched on minute, value and status
+TEST(cli_merge_archive_without_keys) {
+    auto trace = sim::sessionTrace(kTwoSegments);
+    auto plain = runCli(trace);
+    auto old = withoutKeys(plain.out);
+    CHECK(std::string::npos==old.find("\"key\""));
+    auto archive = writeTemp(old);
+    auto r = runCli(trace, "--merge " + archive);
+    CHECK_EQ(r.code, kExitOk);
+    CHECK_EQ(r.out, plain.out);
+    unlink(archive.c_str());
+}
+
+TEST(cli_merge_refuses_another_meter) {
+    auto trace = sim::sessionTrace(kTwoSegments);
+    auto other = replaceAll(runCli(trace).out, "92500000042", "92599999999");
+    auto archive = writeTemp(other);
+    auto r = runCli(trace, "--merge " + archive);
+    CHECK_EQ(r.code, kExitUsage);
+    CHECK_EQ(r.out, std::string(""));
+    CHECK_EQ(r.err, "accuchek: archive " + archive + " holds the readings of meter 92599999999, this is meter 92500000042: keep one archive per meter\n");
+    unlink(archive.c_str());
+}
+
+TEST(cli_merge_refuses_a_bad_archive) {
+    auto trace = sim::sessionTrace(kTwoSegments);
+    auto bad = writeTemp("{\"format\": 2, \"readings\": [{\"timestamp\":\"2026/10/01 08:00\"}]}");
+    auto r = runCli(trace, "--merge " + bad);
+    CHECK_EQ(r.code, kExitUsage);
+    CHECK_EQ(r.out, std::string(""));
+    CHECK_EQ(r.err, "accuchek: bad archive " + bad + ": reading 0: no \"mg/dL\"\n");
+    unlink(bad.c_str());
+
+    auto missing = runCli(trace, "--merge /nonexistent/archive.json");
+    CHECK_EQ(missing.code, kExitUsage);
+    CHECK_EQ(missing.err, std::string("accuchek: cannot read archive /nonexistent/archive.json\n"));
+}
+
+// "--merge a.json > a.json": the shell empties a.json before accuchek starts
+TEST(cli_merge_into_the_archive_itself_is_refused) {
+    auto trace = sim::sessionTrace(kTwoSegments);
+    auto archive = writeTemp(runCli(trace).out);
+    auto r = runCli(trace, "--merge " + archive + " >" + archive);
+    CHECK_EQ(r.code, kExitUsage);
+    CHECK(0==r.err.find("accuchek: stdout is the archive " + archive + " itself, emptied by the shell"));
+    unlink(archive.c_str());
 }
 
 // accuchek used to refuse to run unless root; USB access now comes from udev.

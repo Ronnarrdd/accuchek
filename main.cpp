@@ -19,6 +19,7 @@
 
 #include <log.h>
 #include <usb.h>
+#include <merge.h>
 #include <trace.h>
 #include <output.h>
 #include <session.h>
@@ -34,6 +35,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdarg.h>
+#include <sys/stat.h>
 #include <memory>
 #include <algorithm>
 
@@ -72,6 +74,7 @@ struct Args {
     const char *replayPath = 0;
     const char *configPath = 0;
     const char *nowText = 0;
+    const char *mergePath = 0;
     bool listDevices = false;
     SessionOptions options;
 };
@@ -171,14 +174,54 @@ static void replayTrace(
     runSession(*replay, args.options, download);
 }
 
+// the archive of --merge, checked before talking to the meter
+static Archive loadArchive(
+    const char *path
+) {
+    // "accuchek --merge a.json > a.json": the shell has already emptied it
+    struct stat out;
+    struct stat in;
+    if(0==fstat(STDOUT_FILENO, &out) && 0==stat(path, &in) && out.st_dev==in.st_dev && out.st_ino==in.st_ino) {
+        die(kExitUsage, "stdout is the archive %s itself, emptied by the shell before accuchek started: "
+            "write to another file, then rename it", path);
+    }
+    std::string text;
+    if(false==readFile(path, text)) {
+        die(kExitUsage, "cannot read archive %s", path);
+    }
+    Archive archive;
+    std::string error;
+    if(!parseArchive(text, archive, error)) {
+        die(kExitUsage, "bad archive %s: %s", path, error.c_str());
+    }
+    return archive;
+}
+
+// the archive readings the meter no longer holds, then the download
+static void mergeArchive(
+    const char *path,
+    const Archive &archive,
+    Download &download
+) {
+    const auto &serial = download.report.meter.serial;
+    if(!archive.serial.empty() && download.report.hasMeter && !serial.empty() && archive.serial!=serial) {
+        die(kExitUsage, "archive %s holds the readings of meter %s, this is meter %s: keep one archive per meter",
+            path, archive.serial.c_str(), serial.c_str());
+    }
+    std::vector<Sample> merged;
+    auto kept = mergeSamples(archive.samples, download.samples, merged);
+    LOG_NFO("merge: %d archive readings kept, %d downloaded", (int)kept, (int)download.samples.size());
+    download.samples.swap(merged);
+}
+
 // set by the Makefile from git describe or the VERSION file
 #ifndef ACCUCHEK_VERSION
 #define ACCUCHEK_VERSION "unknown"
 #endif
 
 static const char kUsage[] =
-    "usage: accuchek [DEVICE_INDEX] [--config FILE] [--set-time] [--capture TRACE]\n"
-    "       accuchek --replay TRACE [--set-time --now \"YYYY/MM/DD HH:MM:SS\"]\n"
+    "usage: accuchek [DEVICE_INDEX] [--config FILE] [--set-time] [--capture TRACE] [--merge ARCHIVE]\n"
+    "       accuchek --replay TRACE [--set-time --now \"YYYY/MM/DD HH:MM:SS\"] [--merge ARCHIVE]\n"
     "       accuchek [--config FILE] --known-devices\n"
     "       accuchek --help | --version\n"
     "\n"
@@ -191,6 +234,9 @@ static const char kUsage[] =
     "  --capture TRACE   also record the USB exchange to TRACE (health data!)\n"
     "  --replay TRACE    replay a recorded exchange instead of talking to a meter\n"
     "  --now TIME        PC clock to assume while replaying\n"
+    "  --merge ARCHIVE   also output the readings of ARCHIVE (an earlier output)\n"
+    "                    that the meter no longer holds, without duplicates;\n"
+    "                    write to another file, then rename it over ARCHIVE\n"
     "  --config FILE     add or disable meter models (see config.example.txt)\n"
     "  --known-devices   list accepted meters as vendor:product\n"
     "\n"
@@ -265,6 +311,8 @@ static std::string parseArgs(
             value(i, args.capturePath);
         } else if(0==strcmp(argv[i], "--replay") && i+1<argc) {
             value(i, args.replayPath);
+        } else if(0==strcmp(argv[i], "--merge") && i+1<argc) {
+            value(i, args.mergePath);
         } else if('-'!=argv[i][0]) {
             long n = 0;
             if(!parseCount(argv[i], 9999, n)) {
@@ -326,6 +374,12 @@ static std::string run(
         return list;
     }
 
+    // a bad archive is refused before the meter is read
+    Archive archive;
+    if(0!=args.mergePath) {
+        archive = loadArchive(args.mergePath);
+    }
+
     LOG_NFO("starting");
     Download download;
     if(0!=args.replayPath) {
@@ -339,6 +393,9 @@ static std::string run(
     }
     for(const auto &warning : countWarnings(download.report)) {
         fprintf(stderr, "accuchek: warning: %s\n", warning.c_str());
+    }
+    if(0!=args.mergePath) {
+        mergeArchive(args.mergePath, archive, download);
     }
     return outputJson(download.report, download.samples);
 }

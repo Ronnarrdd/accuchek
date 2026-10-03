@@ -50,13 +50,15 @@ int main(
     auto stats = fuzz::run(gSeed, first, count);
     printf(
         "fuzz seed=%llu: %ld iterations, segments parsed %ld / rejected %ld, sessions ok %ld / failed %ld, "
-        "invariant failures %ld, crashes 0\n",
+        "archives parsed %ld / rejected %ld, invariant failures %ld, crashes 0\n",
         (unsigned long long)gSeed,
         stats.iterations,
         stats.parsedSegments,
         stats.rejectedSegments,
         stats.sessionsOk,
         stats.sessionsFailed,
+        stats.archivesParsed,
+        stats.archivesRejected,
         stats.invariantFailures
     );
     return 0==stats.invariantFailures ? 0 : 1;

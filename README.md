@@ -59,6 +59,7 @@ accuchek 1 > readings.json                      # second one, if several are plu
 accuchek --set-time > readings.json             # also set the meter clock if it is off by more than 60 s
 accuchek --capture session.trace > readings.json   # also record the USB exchange
 accuchek --replay session.trace > readings.json    # replay a recording, no meter needed
+accuchek --merge archive.json > archive.new && mv archive.new archive.json   # keep the readings the meter drops
 accuchek --known-devices                        # accepted meters, as vendor:product
 accuchek --config my-meters.txt                 # add or disable models (format: config.example.txt)
 accuchek --help
@@ -67,6 +68,15 @@ accuchek --help
 Ambiguous command lines are refused with exit code 1 rather than guessed: a `DEVICE_INDEX` that is not a plain number, an option given twice, `--capture` or `DEVICE_INDEX` with `--replay`, a `--now` that is not a real local time (2026/02/30, or 02:30 on the night clocks spring forward).
 
 `--set-time` only writes the clock when the meter declares it settable and the PC clock is NTP synchronized (`adjtimex` without `TIME_ERROR`). A meter that refuses does not stop the download (`"action": "rejected"`).
+
+### Keeping more than the meter holds
+
+A Guide keeps its last 720 readings. `--merge ARCHIVE` reads an earlier output of accuchek and writes the download preceded by the archive readings the meter no longer holds, without duplicates. The output is a normal format 2 object: `meter`, `clock`, `glucose` and `meal` describe this download, `readings` the whole history, `id` numbered again from 0.
+
+- Same reading: same `key`, `mg/dL` and `status`. Archives written before 2.2 have no `key`: a reading is then the download reading of the same minute, `mg/dL` and `status`, matched one to one, and is written back with the meter's key.
+- The archive is checked before the meter is read. Exit code 1, with nothing written, when it is not an accuchek output, when a reading is inconsistent (a `key` that is not the time of its `timestamp`, `"range": "high"` without 601 mg/dL...), or when it comes from another meter (serial numbers differ).
+- Write to another file, then rename it: with `accuchek --merge a.json > a.json` the shell empties `a.json` before accuchek starts. accuchek detects it and refuses, but the archive is already gone.
+- `epoch`, `id` and `mmol/L` are computed again; unknown fields of the archive are dropped.
 
 A trace holds all your readings: it is health data. Keep it out of public places; the `.gitignore` ignores `*.trace` outside `tests/fixtures/`.
 
@@ -89,7 +99,7 @@ One JSON object, written only after the whole download succeeded. Formal definit
 
 - `glucose.announced` is the count the meter gives for its glucose segment, `received` the readings actually downloaded (same for `meal`). When they differ, the download still succeeds (exit code 0) and stderr gets `accuchek: warning: the meter announced N readings, M received`.
 - `timestamp` is the meter time. `epoch` is that time read in the PC time zone, summer time included.
-- `id` is the position of the reading in the output. A Guide keeps its last 720 readings: once full, each new reading drops the oldest one and every `id` shifts by one. To recognize a reading from one download to the next, use `key` (the raw meter time, seconds included, `2026100120471300` for 2026/10/01 20:47:13) with `mg/dL` and `status`.
+- `id` is the position of the reading in the output. A Guide keeps its last 720 readings: once full, each new reading drops the oldest one and every `id` shifts by one. To recognize a reading from one download to the next, use `key` (the raw meter time, seconds included, `2026100120471300` for 2026/10/01 20:47:13) with `mg/dL` and `status`, or let `--merge` do it.
 - `mmol/L` is `mg/dL / 18` with one decimal, as a meter set to mmol/L shows it. `mg/dL` is the value the meter stores.
 - Every reading is written, whatever its `status` (raw value from the meter, 0 for a normal reading).
 - Off-scale readings get `"range": "high"` with 601 mg/dL (HI) or `"range": "low"` with 9 mg/dL (LO), as in the Tidepool driver.
@@ -106,7 +116,7 @@ On failure stdout stays empty (never a partial download) and stderr holds one li
 | Code | Meaning |
 | --- | --- |
 | 0 | success, including an empty meter (`"readings": []`) |
-| 1 | usage: unknown option, unreadable config file or trace |
+| 1 | usage: unknown option, unreadable config file or trace, bad `--merge` archive |
 | 2 | no known meter on the USB bus |
 | 3 | meter found but access denied: the udev rule is missing or not loaded |
 | 4 | USB transfer failed: timeout, meter unplugged |
@@ -125,7 +135,8 @@ On failure stdout stays empty (never a partial download) and stderr holds one li
 ```sh
 make test          # unit and session tests, with ASan / UBSan when available
 make schema-check  # replay every fixture, validate the JSON (pip install jsonschema)
-make fuzz          # 200 000 mutated packets against guard pages, 0 crash expected
+make fuzz          # 200 000 mutated packets against guard pages and mutated archives, 0 crash expected
+make eval-merge    # --merge on real outputs, oldest first (ARCHIVES="a.json b.json"; default: Glucofi's raw copies)
 make hooks         # once per clone: make test (warnings as errors) before every commit
 ```
 
@@ -139,6 +150,8 @@ The code builds without a single warning under `-Wall -Wextra -Wshadow`; CI buil
 | `output.h/.cpp` | The JSON object of a download (`outputJson`), built in memory. No I/O. |
 | `usb.h/.cpp` | libusb: finding known meters (`scanMeters`), the open sequence (`ClaimedMeter` over `DeviceOps`, faked in tests), `LibusbTransport`. The active configuration is never set again: on a configured device that is a lightweight reset. |
 | `log.h/.cpp` | One line per log on stderr, only with `ACCUCHEK_DBG`. |
+| `json.h/.cpp` | Strict JSON reader (RFC 8259) for `--merge` archives: no comments, trailing commas, duplicate keys, nesting past 64. Written here to keep libusb the only dependency. |
+| `merge.h/.cpp` | `--merge`: reading an archive back into samples, checked field by field, and merging it with a download. |
 | `main.cpp` | Command line, choosing the meter, writing the JSON on stdout. |
 | `tests/sim.h` | Meter simulator building packets with the Tidepool driver layout. |
 | `tests/fixtures/` | `*.trace`: simulated sessions; `guide925_*.hex`: answers from a real Guide 925, serial number, system id and dates replaced. |
