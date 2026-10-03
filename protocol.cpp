@@ -961,6 +961,22 @@ double mmolPerLiter(
     return std::round(mgdl * 10 / 18.0) / 10;
 }
 
+int reportedValue(
+    const Sample &s,
+    const char *&range
+) {
+    range = 0;
+    if(kValueHigh==s.value) {
+        range = "high";
+        return kReportedHigh;
+    }
+    if(kValueLow==s.value) {
+        range = "low";
+        return kReportedLow;
+    }
+    return s.value;
+}
+
 std::string sampleJson(
     const Sample &s,
     int id
@@ -980,15 +996,9 @@ std::string sampleJson(
         return buf;
     }
 
-    int mgdl = s.value;
-    const char *range = "";
-    if(kValueHigh==s.value) {
-        mgdl = kReportedHigh;
-        range = ", \"range\":\"high\"";
-    } else if(kValueLow==s.value) {
-        mgdl = kReportedLow;
-        range = ", \"range\":\"low\"";
-    }
+    const char *rangeName = 0;
+    auto mgdl = reportedValue(s, rangeName);
+    auto range = rangeName ? std::string(", \"range\":\"") + rangeName + "\"" : std::string();
 
     std::string meal;
     if(0!=s.meal) {
@@ -1010,7 +1020,7 @@ std::string sampleJson(
         mgdl,
         mmolPerLiter(mgdl),
         (int)s.status,
-        range,
+        range.c_str(),
         meal.c_str(),
         key.c_str()
     );

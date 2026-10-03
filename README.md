@@ -56,6 +56,8 @@ Plug the meter in. It shows "data transfer", then:
 ```sh
 accuchek > readings.json                        # first known meter on the bus
 accuchek 1 > readings.json                      # second one, if several are plugged in
+accuchek --wait 60 > readings.json              # start first, plug the meter in within 60 s
+accuchek --csv > readings.csv                   # one line per reading, for a spreadsheet
 accuchek --set-time > readings.json             # also set the meter clock if it is off by more than 60 s
 accuchek --capture session.trace > readings.json   # also record the USB exchange
 accuchek --replay session.trace > readings.json    # replay a recording, no meter needed
@@ -65,7 +67,9 @@ accuchek --config my-meters.txt                 # add or disable models (format:
 accuchek --help
 ```
 
-Ambiguous command lines are refused with exit code 1 rather than guessed: a `DEVICE_INDEX` that is not a plain number, an option given twice, `--capture` or `DEVICE_INDEX` with `--replay`, a `--now` that is not a real local time (2026/02/30, or 02:30 on the night clocks spring forward).
+Ambiguous command lines are refused with exit code 1 rather than guessed: a `DEVICE_INDEX` that is not a plain number, an option given twice, `--capture`, `--wait` or `DEVICE_INDEX` with `--replay`, a `--wait` outside 1 to 3600 seconds, a `--now` that is not a real local time (2026/02/30, or 02:30 on the night clocks spring forward).
+
+`--wait SECONDS` looks for the meter every half second until it is on the bus and readable: a meter just plugged in is refused for a moment, until udev grants access. Past the delay, the usual exit code 2 (no meter) or 3 (access denied).
 
 `--set-time` only writes the clock when the meter declares it settable and the PC clock is NTP synchronized (`adjtimex` without `TIME_ERROR`). A meter that refuses does not stop the download (`"action": "rejected"`).
 
@@ -108,6 +112,14 @@ One JSON object, written only after the whole download succeeded. Formal definit
 - `meter` and `clock` are null when the meter does not provide them, and the top-level `meal` is null when it has no marker segment.
 - `clock` is read at the start of the session, before `--set-time`. Possible actions: `not_requested`, `set`, `within_tolerance`, `not_settable`, `pc_not_synchronized`, `pc_unknown`, `unknown`, `rejected`.
 - In a replay without `--now`, `pc`, `offset_s` and `pc_synchronized` are null, so replaying a trace always gives the same output.
+
+`--csv` writes the readings only, with the same fields, a null or absent field left empty:
+
+```
+id,key,epoch,timestamp,mg/dL,mmol/L,status,range,meal,error
+0,2026090108000000,1788242400,2026/09/01 08:00,120,6.7,0,,fasting,
+1,2026090112000000,1788256800,2026/09/01 12:00,601,33.4,0,high,,
+```
 
 ## Exit codes
 

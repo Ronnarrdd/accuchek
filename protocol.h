@@ -277,6 +277,10 @@
     // mmol/L as a meter set to mmol/L shows it: mg/dL / 18, one decimal
     double mmolPerLiter(int mgdl);
 
+    // mg/dL to report for a dated sample: 601 for HI and 9 for LO, with range
+    // set to "high" or "low", the stored value otherwise (range set to 0)
+    int reportedValue(const Sample &sample, const char *&range);
+
     // one data segment message
     struct Segment {
         uint32_t u0;        // echoed back in the ACK

@@ -2,6 +2,8 @@
 #include "sim.h"
 #include <session.h>
 #include <trace.h>
+#include <usb.h>
+#include <algorithm>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -746,6 +748,12 @@ TEST(cli_rejects_ambiguous_arguments) {
         {"--replay a --replay b", "--replay given twice"},
         {"--capture a --capture b", "--capture given twice"},
         {"--merge a --merge b", "--merge given twice"},
+        {"--wait 1 --wait 2", "--wait given twice"},
+        {"--wait 0", "bad --wait 0, expected seconds from 1 to 3600"},
+        {"--wait 3601", "bad --wait 3601, expected seconds from 1 to 3600"},
+        {"--wait 10s", "bad --wait 10s, expected seconds from 1 to 3600"},
+        {"--wait -5", "bad --wait -5, expected seconds from 1 to 3600"},
+        {"--replay a --wait 5", "--wait waits for a meter, it does not go with --replay"},
         {"--replay a --capture b", "--capture records a meter, it does not go with --replay"},
         {"1 --replay a", "DEVICE_INDEX selects a meter, it does not go with --replay"},
     };
@@ -1023,6 +1031,58 @@ TEST(cli_merge_into_the_archive_itself_is_refused) {
     CHECK_EQ(r.code, kExitUsage);
     CHECK(0==r.err.find("accuchek: stdout is the archive " + archive + " itself, emptied by the shell"));
     unlink(archive.c_str());
+}
+
+TEST(cli_csv_output) {
+    auto r = runCli(sim::sessionTrace(kFlags), "--csv");
+    CHECK_EQ(r.code, kExitOk);
+    CHECK_EQ(r.err, std::string(""));
+    CHECK_EQ(
+        r.out,
+        std::string(
+            "id,key,epoch,timestamp,mg/dL,mmol/L,status,range,meal,error\n"
+            "0,2026090108000000,1788242400,2026/09/01 08:00,120,6.7,0,,,\n"
+            "1,2026090112000000,1788256800,2026/09/01 12:00,601,33.4,0,high,,\n"
+            "2,2026090203150000,1788311700,2026/09/02 03:15,9,0.5,0,low,,\n"
+            "3,2026090208000000,1788328800,2026/09/02 08:00,140,7.8,1,,,\n"
+        )
+    );
+    auto meals = runCli(sim::sessionTrace(mealSession()), "--csv");
+    CHECK(std::string::npos!=meals.out.find(",0,,fasting,\n"));
+    auto empty = runCli(sim::sessionTrace(kNoSegments), "--csv");
+    CHECK_EQ(empty.out, std::string("id,key,epoch,timestamp,mg/dL,mmol/L,status,range,meal,error\n"));
+}
+
+// every line has the 10 fields of the header, whatever the reading
+TEST(cli_csv_with_merge_keeps_ten_fields) {
+    auto trace = sim::sessionTrace(mealSession());
+    auto archive = writeTemp(withoutKeys(runCli(sim::sessionTrace(kFlags)).out));
+    auto r = runCli(trace, "--csv --merge " + archive);
+    CHECK_EQ(r.code, kExitOk);
+    size_t lines = 0;
+    for(size_t at=0; at<r.out.size(); at=r.out.find('\n', at) + 1) {
+        auto line = r.out.substr(at, r.out.find('\n', at) - at);
+        CHECK_EQ(std::count(line.begin(), line.end(), ','), 9);
+        ++lines;
+    }
+    // header, 4 archive readings of another day without key, 4 downloaded
+    CHECK_EQ(lines, 9u);
+    CHECK(std::string::npos!=r.out.find("\n0,,1788242400,2026/09/01 08:00,120,6.7,0,,,\n"));
+    unlink(archive.c_str());
+}
+
+// without --wait a meter plugged in a second too late was "no meter found";
+// #99 never exists, so a plugged meter is looked at but never read
+TEST(cli_wait_gives_up_after_its_delay) {
+    auto start = monotonicMs();
+    auto r = runBinary("99 --wait 1");
+    auto elapsed = monotonicMs() - start;
+    CHECK(kExitNoDevice==r.code || kExitAccessDenied==r.code);
+    if(kExitNoDevice==r.code) {
+        CHECK(std::string::npos!=r.err.find(" after waiting 1 s\n"));
+    }
+    CHECK(900<=elapsed && elapsed<5000);
+    CHECK_EQ(r.out, std::string(""));
 }
 
 // accuchek used to refuse to run unless root; USB access now comes from udev.

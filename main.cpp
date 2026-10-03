@@ -75,7 +75,10 @@ struct Args {
     const char *configPath = 0;
     const char *nowText = 0;
     const char *mergePath = 0;
+    const char *waitText = 0;
+    long waitSeconds = 0;       // 0: the meter must already be on the bus
     bool listDevices = false;
+    bool csv = false;
     SessionOptions options;
 };
 
@@ -142,16 +145,30 @@ static void downloadFromMeter(
     Download &download
 ) {
     UsbContext usb;
-    auto scan = scanMeters(usb.context, config);
+    MeterScan scan;
     auto index = std::max(0, args.deviceIndex);
+    auto found = [&]() {
+        scan = scanMeters(usb.context, config);
+        return index<int(scan.meters.size());
+    };
+    if(0<args.waitSeconds) {
+        if(isatty(STDERR_FILENO)) {
+            fprintf(stderr, "accuchek: waiting up to %ld s for the meter, plug it in\n", args.waitSeconds);
+        }
+        // a meter just plugged in is refused until udev gives access: keep looking
+        waitFor(found, args.waitSeconds * 1000, 500, monotonicMs, sleepMs);
+    } else {
+        found();
+    }
+    auto waited = (0<args.waitSeconds ? " after waiting " + std::to_string(args.waitSeconds) + " s" : std::string());
     if(scan.meters.empty()) {
         if(!scan.accessDenied.empty()) {
             die(kExitAccessDenied, "permission denied on USB meter %s", scan.accessDenied.c_str());
         }
-        die(kExitNoDevice, "no Accu-Chek meter found on the USB bus");
+        die(kExitNoDevice, "no Accu-Chek meter found on the USB bus%s", waited.c_str());
     }
     if(int(scan.meters.size())<=index) {
-        die(kExitNoDevice, "meter #%d selected but only %d found", index, (int)scan.meters.size());
+        die(kExitNoDevice, "meter #%d selected but only %d found%s", index, (int)scan.meters.size(), waited.c_str());
     }
     withMeter(scan.meters[index], [&](Transport &transport) { runRecorded(transport, args, download); });
 }
@@ -220,8 +237,9 @@ static void mergeArchive(
 #endif
 
 static const char kUsage[] =
-    "usage: accuchek [DEVICE_INDEX] [--config FILE] [--set-time] [--capture TRACE] [--merge ARCHIVE]\n"
-    "       accuchek --replay TRACE [--set-time --now \"YYYY/MM/DD HH:MM:SS\"] [--merge ARCHIVE]\n"
+    "usage: accuchek [DEVICE_INDEX] [--config FILE] [--wait SECONDS] [--set-time] [--capture TRACE]\n"
+    "                [--merge ARCHIVE] [--csv]\n"
+    "       accuchek --replay TRACE [--set-time --now \"YYYY/MM/DD HH:MM:SS\"] [--merge ARCHIVE] [--csv]\n"
     "       accuchek [--config FILE] --known-devices\n"
     "       accuchek --help | --version\n"
     "\n"
@@ -229,6 +247,8 @@ static const char kUsage[] =
     "them as one JSON object on stdout.\n"
     "\n"
     "  DEVICE_INDEX      read the Nth known meter on the bus (default: the first)\n"
+    "  --wait SECONDS    wait up to SECONDS (1 to 3600) for the meter to be plugged in\n"
+    "  --csv             one CSV line per reading instead of the JSON object\n"
     "  --set-time        set the meter clock to the PC clock if they differ by\n"
     "                    more than 60 s and the PC clock is NTP synchronized\n"
     "  --capture TRACE   also record the USB exchange to TRACE (health data!)\n"
@@ -313,6 +333,10 @@ static std::string parseArgs(
             value(i, args.replayPath);
         } else if(0==strcmp(argv[i], "--merge") && i+1<argc) {
             value(i, args.mergePath);
+        } else if(0==strcmp(argv[i], "--wait") && i+1<argc) {
+            value(i, args.waitText);
+        } else if(0==strcmp(argv[i], "--csv")) {
+            args.csv = true;
         } else if('-'!=argv[i][0]) {
             long n = 0;
             if(!parseCount(argv[i], 9999, n)) {
@@ -335,6 +359,14 @@ static std::string parseArgs(
     // a fake clock must never reach a real meter
     if(0!=args.nowText && 0==args.replayPath) {
         die(kExitUsage, "--now only goes with --replay");
+    }
+    if(0!=args.waitText) {
+        if(!parseCount(args.waitText, 3600, args.waitSeconds) || args.waitSeconds<1) {
+            die(kExitUsage, "bad --wait %s, expected seconds from 1 to 3600", args.waitText);
+        }
+        if(0!=args.replayPath) {
+            die(kExitUsage, "--wait waits for a meter, it does not go with --replay");
+        }
     }
     return "";
 }
@@ -396,6 +428,9 @@ static std::string run(
     }
     if(0!=args.mergePath) {
         mergeArchive(args.mergePath, archive, download);
+    }
+    if(args.csv) {
+        return outputCsv(download.samples);
     }
     return outputJson(download.report, download.samples);
 }
