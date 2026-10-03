@@ -135,7 +135,9 @@ The code builds without a single warning under `-Wall -Wextra -Wshadow`; CI buil
 | `session.h/.cpp` | Full download sequence over an abstract `Transport`. Failures throw `SessionError`. |
 | `trace.h/.cpp` | Recorded USB exchanges: `RecordingTransport` (`--capture`) and `ReplayTransport` (`--replay`). |
 | `output.h/.cpp` | The JSON object of a download (`outputJson`), built in memory. No I/O. |
-| `main.cpp` | Command line, USB discovery (libusb), `LibusbTransport`, writing the JSON on stdout. |
+| `usb.h/.cpp` | libusb: finding known meters (`scanMeters`), the open sequence (`ClaimedMeter` over `DeviceOps`, faked in tests), `LibusbTransport`. The active configuration is never set again: on a configured device that is a lightweight reset. |
+| `log.h/.cpp` | One line per log on stderr, only with `ACCUCHEK_DBG`. |
+| `main.cpp` | Command line, choosing the meter, writing the JSON on stdout. |
 | `tests/sim.h` | Meter simulator building packets with the Tidepool driver layout. |
 | `tests/fixtures/` | `*.trace`: simulated sessions; `guide925_*.hex`: answers from a real Guide 925, serial number, system id and dates replaced. |
 
