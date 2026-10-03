@@ -692,8 +692,9 @@ static void replayTrace(
     runSession(*replay);
 }
 
+// set by the Makefile from git describe or the VERSION file
 #ifndef ACCUCHEK_VERSION
-#define ACCUCHEK_VERSION "2.0.0"
+#define ACCUCHEK_VERSION "unknown"
 #endif
 
 static const char kUsage[] =

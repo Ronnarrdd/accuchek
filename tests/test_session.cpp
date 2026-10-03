@@ -856,9 +856,18 @@ TEST(cli_help_and_version) {
         CHECK(std::string::npos!=r.out.find("--known-devices"));
         CHECK_EQ(r.err, std::string(""));
     }
+}
+
+// git describe gives "2.1.0", "2.1.0-3-gabcdef0" or "2.1.0-dirty" once v2.1.0
+// is tagged: tagging a release without bumping VERSION fails here
+TEST(cli_version_starts_with_the_version_file) {
+    std::string version;
+    CHECK(readFile("VERSION", version));
+    CHECK(!version.empty() && '\n'==version.back());
+    version.pop_back();
     auto v = runBinary("--version");
     CHECK_EQ(v.code, kExitOk);
-    CHECK(0==v.out.find("accuchek "));
+    CHECK_EQ(v.out.substr(0, 9 + version.size()), "accuchek " + version);
     CHECK_EQ(v.out.back(), '\n');
 }
 

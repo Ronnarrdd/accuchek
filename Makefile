@@ -8,6 +8,11 @@ OPTFLAGS ?= -O2
 WARNINGS = -Wall -Wextra -Wshadow
 WERROR ?=
 CFLAGS = -g0 $(OPTFLAGS) -fomit-frame-pointer -DNDEBUG $(WARNINGS) $(WERROR)
+# version: git describe in a clone of this repository, the VERSION file in a
+# copy of the sources (tarball, /tmp build, sources vendored in another repo,
+# whose tags are not ours)
+GIT_VERSION := $(shell [ "$$(git rev-parse --show-toplevel 2>/dev/null)" = "$(CURDIR)" ] && git describe --tags --dirty --match 'v[0-9]*' 2>/dev/null)
+VERSION := $(if $(GIT_VERSION),$(patsubst v%,%,$(GIT_VERSION)),$(shell cat VERSION))
 PREFIX ?= /usr/local
 UDEVDIR ?= /etc/udev/rules.d
 # sanitizers when installed (libasan-devel, libubsan-devel)
@@ -25,6 +30,14 @@ all: accuchek
 accuchek: .objs/main.o $(LIB_SRCS:%.cpp=.objs/%.o)
 	@echo lnk -- $@
 	@$(CXX) $(CFLAGS) -o $@ $^ $(LIBS)
+
+# main.o is rebuilt when the version changes, not on every make
+.objs/version: FORCE
+	@mkdir -p .objs
+	@[ "$$(cat $@ 2>/dev/null)" = "$(VERSION)" ] || echo "$(VERSION)" > $@
+.objs/main.o: .objs/version
+.objs/main.o: CFLAGS += -DACCUCHEK_VERSION='"$(VERSION)"'
+FORCE:
 
 .objs/%.o: %.cpp Makefile
 	@echo c++ -- $<
