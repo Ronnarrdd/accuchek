@@ -692,6 +692,24 @@ TEST(cli_empty_meter_outputs_no_readings) {
     CHECK_EQ(r.err, std::string(""));
 }
 
+// a full disk used to end in exit code 0 with the readings lost
+TEST(cli_unwritable_stdout_is_an_error) {
+    auto full = runCli(sim::sessionTrace(kTwoSegments), ">/dev/full");
+    CHECK_EQ(full.code, kExitOutput);
+    CHECK_EQ(full.err, std::string("accuchek: cannot write on stdout: No space left on device\n"));
+    auto list = runBinary("--known-devices >/dev/full");
+    CHECK_EQ(list.code, kExitOutput);
+    auto help = runBinary("--help >/dev/full");
+    CHECK_EQ(help.code, kExitOutput);
+}
+
+// with fd 1 closed, the --capture trace would get fd 1 and the JSON with it
+TEST(cli_closed_stdout_is_refused_before_anything) {
+    auto r = runCli(sim::sessionTrace(kTwoSegments), ">&-");
+    CHECK_EQ(r.code, kExitOutput);
+    CHECK_EQ(r.err, std::string("accuchek: stdout is closed, nowhere to write the readings\n"));
+}
+
 TEST(cli_unreadable_trace_is_a_usage_error) {
     auto r = runBinary("--replay /nonexistent.trace");
     CHECK_EQ(r.code, kExitUsage);

@@ -29,6 +29,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <stdarg.h>
 #include <memory>
@@ -674,10 +676,11 @@ static const char kUsage[] =
     "  --known-devices   list accepted meters as vendor:product\n"
     "\n"
     "Exit codes: 0 ok, 1 usage, 2 no meter, 3 access denied (udev rule missing),\n"
-    "4 USB transfer failed, 5 protocol error. Set ACCUCHEK_DBG=1 for logs on stderr.\n";
+    "4 USB transfer failed, 5 protocol error, 6 stdout not writable.\n"
+    "Set ACCUCHEK_DBG=1 for logs on stderr.\n";
 
-// everything but the final JSON output, throws Fatal on failure
-static void run(
+// everything but writing on stdout: returns what to write, throws Fatal on failure
+static std::string run(
     int argc,
     char *argv[]
 ) {
@@ -691,11 +694,9 @@ static void run(
     bool listDevices = false;
     for(int i=1; i<argc; ++i) {
         if(0==strcmp(argv[i], "--help") || 0==strcmp(argv[i], "-h")) {
-            fputs(kUsage, stdout);
-            exit(kExitOk);
+            return kUsage;
         } else if(0==strcmp(argv[i], "--version")) {
-            printf("accuchek %s\n", ACCUCHEK_VERSION);
-            exit(kExitOk);
+            return std::string("accuchek ") + ACCUCHEK_VERSION + "\n";
         } else if(0==strcmp(argv[i], "--config") && i+1<argc) {
             configPath = argv[++i];
         } else if(0==strcmp(argv[i], "--set-time")) {
@@ -739,10 +740,11 @@ static void run(
         g_options.pcClock = [now]() { return PcClock{now, true, true}; };
     }
     if(listDevices) {
+        std::string list;
         for(const auto &device : allowedDevices(g_config)) {
-            printf("%s\n", device.c_str());
+            list += device + "\n";
         }
-        exit(kExitOk);
+        return list;
     }
 
     // make some noise
@@ -759,6 +761,22 @@ static void run(
 
         closeLibUSB(libUSBContext);
     }
+    return outputJson(g_report, g_samples);
+}
+
+// a full disk or a closed pipe must not end in exit code 0
+static void writeStdout(
+    const std::string &text
+) {
+    auto written = fwrite(text.data(), 1, text.size(), stdout);
+    auto flushed = (0==fflush(stdout));
+    auto error = errno;
+    if(written!=text.size() || !flushed || ferror(stdout)) {
+        die(kExitOutput, "cannot write on stdout: %s", strerror(error));
+    }
+    if(0!=fclose(stdout)) {
+        die(kExitOutput, "cannot write on stdout: %s", strerror(errno));
+    }
 }
 
 // entry point
@@ -769,13 +787,16 @@ int main(
     // be silent unless asked to talk (on stderr)
     gQuiet = (0==getenv("ACCUCHEK_DBG"));
     try {
-        run(argc, argv);
+        // a closed fd 1 would be reused by the next open, a --capture trace
+        // would then receive the JSON: refuse before talking to the meter
+        if(fcntl(STDOUT_FILENO, F_GETFD)<0) {
+            die(kExitOutput, "stdout is closed, nowhere to write the readings");
+        }
+        writeStdout(run(argc, argv));
     } catch(const Fatal &f) {
         fprintf(stderr, "accuchek: %s\n", f.msg.c_str());
         return f.code;
     }
-    fputs(outputJson(g_report, g_samples).c_str(), stdout);
-    fflush(stdout);
     LOG_NFO("done");
     return kExitOk;
 }

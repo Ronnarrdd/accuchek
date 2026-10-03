@@ -42,6 +42,7 @@
         kExitAccessDenied = 3,  // meter found but not allowed to open it
         kExitTransfer = 4,      // USB transfer failed: timeout, meter unplugged
         kExitProtocol = 5,      // meter aborted or answered something unexpected
+        kExitOutput = 6,        // stdout closed or not writable (disk full...): readings lost
     };
 
     struct SessionError : std::runtime_error {

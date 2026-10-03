@@ -96,7 +96,7 @@ One JSON object, written only after the whole download succeeded. Formal definit
 
 ## Exit codes
 
-On failure stdout stays empty (never a partial download) and stderr holds one line, `accuchek: <reason>`.
+On failure stdout stays empty (never a partial download) and stderr holds one line, `accuchek: <reason>`. The one exception is code 6: stdout itself failed while the JSON was being written, so whatever reached it is incomplete.
 
 | Code | Meaning |
 | --- | --- |
@@ -106,6 +106,7 @@ On failure stdout stays empty (never a partial download) and stderr holds one li
 | 3 | meter found but access denied: the udev rule is missing or not loaded |
 | 4 | USB transfer failed: timeout, meter unplugged |
 | 5 | protocol: the meter aborted the association or answered something unexpected |
+| 6 | output: stdout closed or not writable (disk full, broken pipe); what reached it is incomplete, throw it away |
 
 ## Troubleshooting
 
