@@ -5,7 +5,7 @@ Download every blood glucose reading from a Roche Accu-Chek meter over USB on Li
 ```sh
 $ accuchek > readings.json
 $ jq '.readings[-1]' readings.json
-{"id": 637, "epoch": 1790880420, "timestamp": "2026/10/01 20:47", "mg/dL": 104, "mmol/L": 5.777778, "status": 0, "meal": "fasting"}
+{"id": 637, "epoch": 1790880420, "timestamp": "2026/10/01 20:47", "mg/dL": 104, "mmol/L": 5.8, "status": 0, "meal": "fasting", "key": "2026100120471300"}
 ```
 
 No cloud, no vendor app, no browser: a small C++17 program on top of libusb, without root.
@@ -82,13 +82,15 @@ One JSON object, written only after the whole download succeeded. Formal definit
   "glucose": {"announced": 638, "received": 638},
   "meal": {"announced": 576, "received": 576, "unmatched": 0},
   "readings": [
-    {"id": 0, "epoch": 1617009120, "timestamp": "2021/03/29 11:12", "mg/dL": 133, "mmol/L": 7.388889, "status": 0, "meal": "before_meal"}
+    {"id": 0, "epoch": 1617009120, "timestamp": "2021/03/29 11:12", "mg/dL": 133, "mmol/L": 7.4, "status": 0, "meal": "before_meal", "key": "2021032911120700"}
   ]
 }
 ```
 
 - `glucose.announced` is the count the meter gives for its glucose segment, `received` the readings actually downloaded (same for `meal`). When they differ, the download still succeeds (exit code 0) and stderr gets `accuchek: warning: the meter announced N readings, M received`.
 - `timestamp` is the meter time. `epoch` is that time read in the PC time zone, summer time included.
+- `id` is the position of the reading in the output. A Guide keeps its last 720 readings: once full, each new reading drops the oldest one and every `id` shifts by one. To recognize a reading from one download to the next, use `key` (the raw meter time, seconds included, `2026100120471300` for 2026/10/01 20:47:13) with `mg/dL` and `status`.
+- `mmol/L` is `mg/dL / 18` with one decimal, as a meter set to mmol/L shows it. `mg/dL` is the value the meter stores.
 - Every reading is written, whatever its `status` (raw value from the meter, 0 for a normal reading).
 - Off-scale readings get `"range": "high"` with 601 mg/dL (HI) or `"range": "low"` with 9 mg/dL (LO), as in the Tidepool driver.
 - A reading with an invalid date gets `"error": "invalid date"`, with `epoch` and `timestamp` set to null.

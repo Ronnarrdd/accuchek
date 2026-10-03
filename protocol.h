@@ -265,7 +265,17 @@
         bool validDate;     // BCD digits and calendar ranges are sane
         uint64_t timeKey = 0;   // the 8 raw time bytes, shared with the meal entry of this sample
         uint16_t meal = 0;      // MDC_CTXT_GLU_MEAL_* code, 0 without a meal marker
+        bool hasTimeKey = true; // false for a reading of an old archive, written without "key"
     };
+
+    // "key" of a sample: its 8 raw time bytes in hex, BCD for a valid date, so
+    // "2026100120471300" is 2026/10/01 20:47:13.00; with mg/dL and status it
+    // identifies a reading across downloads (the id is a position, it shifts
+    // when the meter drops its oldest readings)
+    std::string sampleKey(const Sample &sample);
+
+    // mmol/L as a meter set to mmol/L shows it: mg/dL / 18, one decimal
+    double mmolPerLiter(int mgdl);
 
     // one data segment message
     struct Segment {
@@ -362,7 +372,8 @@
     // reported: "status" is the raw device status, off scale values get
     // "range":"high" or "range":"low" with mg/dL set to 601 or 9, samples
     // with an invalid date get null epoch/timestamp and an "error", samples
-    // with a meal marker get "meal"
+    // with a meal marker get "meal", every sample but those of an old
+    // archive ends with its "key"
     std::string sampleJson(const Sample &sample, int id);
 
     // JSON string literal, quotes included, non printable bytes escaped

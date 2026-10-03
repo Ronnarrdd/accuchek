@@ -655,6 +655,8 @@ TEST(cli_outputs_json_object) {
         "  \"readings\": [\n    { \"id\":     0,";
     CHECK_EQ(r.out.substr(0, head.size()), head);
     CHECK(std::string::npos!=r.out.find("\"timestamp\":\"2021/01/16 07:45\", \"mg/dL\": 98"));
+    // the key carries the seconds the timestamp drops
+    CHECK(std::string::npos!=r.out.find("\"key\":\"2021011607450000\" }"));
     CHECK(std::string::npos!=r.out.find("\"id\":     2"));
     CHECK_EQ(r.out.substr(r.out.size() - 9), std::string(" }\n  ]\n}\n"));
 }
@@ -663,10 +665,10 @@ TEST(cli_outputs_meal_markers) {
     auto r = runCli(sim::sessionTrace(mealSession()));
     CHECK_EQ(r.code, 0);
     CHECK(std::string::npos!=r.out.find("  \"glucose\": {\"announced\":4, \"received\":4},\n  \"meal\": {\"announced\":4, \"received\":4, \"unmatched\":1},\n"));
-    CHECK(std::string::npos!=r.out.find("\"status\":0, \"meal\":\"fasting\" }"));
-    CHECK(std::string::npos!=r.out.find("\"status\":0, \"meal\":\"after_meal\" }"));
-    CHECK(std::string::npos!=r.out.find("\"status\":0, \"meal\":\"bedtime\" }"));
-    CHECK(std::string::npos!=r.out.find("\"mg/dL\": 98, \"mmol/L\":  5.444444, \"status\":0 }"));
+    CHECK(std::string::npos!=r.out.find("\"status\":0, \"meal\":\"fasting\", \"key\":\""));
+    CHECK(std::string::npos!=r.out.find("\"status\":0, \"meal\":\"after_meal\", \"key\":\""));
+    CHECK(std::string::npos!=r.out.find("\"status\":0, \"meal\":\"bedtime\", \"key\":\""));
+    CHECK(std::string::npos!=r.out.find("\"mg/dL\": 98, \"mmol/L\": 5.4, \"status\":0, \"key\":\""));
 }
 
 TEST(cli_sets_the_meter_clock) {
@@ -757,9 +759,9 @@ TEST(cli_rejects_ambiguous_arguments) {
 TEST(cli_outputs_flagged_samples) {
     auto r = runCli(sim::sessionTrace(kFlags));
     CHECK_EQ(r.code, 0);
-    CHECK(std::string::npos!=r.out.find("\"mg/dL\":601, \"mmol/L\": 33.388889, \"status\":0, \"range\":\"high\""));
+    CHECK(std::string::npos!=r.out.find("\"mg/dL\":601, \"mmol/L\":33.4, \"status\":0, \"range\":\"high\""));
     CHECK(std::string::npos!=r.out.find("\"range\":\"low\""));
-    CHECK(std::string::npos!=r.out.find("\"mg/dL\":140, \"mmol/L\":  7.777778, \"status\":1 }"));
+    CHECK(std::string::npos!=r.out.find("\"mg/dL\":140, \"mmol/L\": 7.8, \"status\":1, \"key\":\""));
 }
 
 // failures used to leave "[" plus some samples on stdout and exit 1, whatever the cause
